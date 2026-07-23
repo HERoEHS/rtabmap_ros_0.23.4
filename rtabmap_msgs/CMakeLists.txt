@@ -79,6 +79,7 @@ set(srv_files
    "srv/DetectMoreLoopClosures.srv"
    "srv/GlobalBundleAdjustment.srv"
    "srv/CleanupLocalGrids.srv"
+   "srv/RemoveFeaturesInBox.srv"
 )
 
 ## Generate messages and services
