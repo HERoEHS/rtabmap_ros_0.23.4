@@ -1003,10 +1003,12 @@ CoreWrapper::CoreWrapper(const rclcpp::NodeOptions & options) :
 	this->get_parameter("odom_correction", odomCorrectionEnabled_);
 
 	// ② pelvis 초기 pose 토픽 구독
+#ifdef HAVE_ALICE_LOCALIZATION_MSGS
     robotPoseInfoSub_ = this->create_subscription<alice_localization_msgs::msg::PoseWithInfoStamped>(
         "/aeirobot/localization/manager_pose",
         aeirobot::qos_sensor_profile,
         std::bind(&CoreWrapper::robotPoseInfoCallback, this, std::placeholders::_1));
+#endif
 
 }
 
@@ -1049,6 +1051,7 @@ CoreWrapper::~CoreWrapper()
 	delete interOdomSync_;
 }
 
+#ifdef HAVE_ALICE_LOCALIZATION_MSGS
 void CoreWrapper::robotPoseInfoCallback(const alice_localization_msgs::msg::PoseWithInfoStamped::SharedPtr msg)
 {
 	// --- 0) info 에 key: set_pose, value: true 인지 확인 ---
@@ -1127,6 +1130,7 @@ void CoreWrapper::robotPoseInfoCallback(const alice_localization_msgs::msg::Pose
     pendingPelvisOverride_ = true;
 	pelvisOverrideActive_  = true;
 }
+#endif  // HAVE_ALICE_LOCALIZATION_MSGS
 
 void CoreWrapper::loadParameters(const std::string & configFile, ParametersMap & parameters)
 {
