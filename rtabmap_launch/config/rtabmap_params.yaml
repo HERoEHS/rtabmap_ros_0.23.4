@@ -1,9 +1,9 @@
-# RTAB-Map 코어 파라미터 튠 (orbbec_rtabmap.launch.py 가 읽는다)
+# RTAB-Map 코어 파라미터 튠 (aeirobot_rtabmap.launch.py 가 읽는다)
 #
 # 왜 여기 있나: 배포본(SECURE)은 launch 파일 본문을 .so 로 봉인하므로 launch 안 값은
 # 고객이 못 만진다. 튠 대상 값은 이 yaml 에 두고, 배포본은 이 디렉토리를
 # ~/.aeirobot/config/rtabmap 으로 바인드 마운트한다 (docker/docs/55-user-config.md).
-# lifelong(orbbec_lifelong) 도 orbbec_rtabmap.launch.py 를 include 하므로 이 한 벌이 rtabmap 을
+# lifelong(aeirobot_lifelong) 도 aeirobot_rtabmap.launch.py 를 include 하므로 이 한 벌이 rtabmap 을
 # 쓰는 모든 경로(실물·sim, zed·orbbec)에 적용된다.
 #
 # 형식: 노드별 평면 맵. ROS params-file(ros__parameters) 형식이 아니다 — launch 가 직접 읽어

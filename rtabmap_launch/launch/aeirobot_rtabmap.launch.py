@@ -15,9 +15,9 @@
 #   7. odom 소스는 카메라와 무관하게 기본 외부 EKF(/odometry/filtered). VO 는 launch_odometry:=true.
 #
 # 사용법:
-#   매핑:     ros2 launch rtabmap_launch orbbec_rtabmap.launch.py
-#   위치추정: ros2 launch rtabmap_launch orbbec_rtabmap.launch.py localization:=true
-#   Orbbec:   ros2 launch rtabmap_launch orbbec_rtabmap.launch.py camera:=orbbec
+#   매핑:     ros2 launch rtabmap_launch aeirobot_rtabmap.launch.py
+#   위치추정: ros2 launch rtabmap_launch aeirobot_rtabmap.launch.py localization:=true
+#   Orbbec:   ros2 launch rtabmap_launch aeirobot_rtabmap.launch.py camera:=orbbec
 #   (기본 zed. sim 이면 use_sim_time:=true 추가)
 #
 # 토픽 (camera_name=camera 기준):
@@ -82,7 +82,7 @@ def _apply_camera_preset(context, *_):
     """빈 인자만 채운다 (명시 인자 우선): 카메라 프리셋 → odom 소스 기본값(launch_odometry 기준)."""
     cam = LaunchConfiguration('camera').perform(context)
     if cam not in _CAM_PRESETS:
-        raise RuntimeError(f"[orbbec_rtabmap] camera:={cam!r} — 가능한 값: {', '.join(_CAM_PRESETS)}")
+        raise RuntimeError(f"[aeirobot_rtabmap] camera:={cam!r} — 가능한 값: {', '.join(_CAM_PRESETS)}")
     resolved = dict(_CAM_PRESETS[cam])
     vo = (LaunchConfiguration('launch_odometry').perform(context) or 'false').lower() in ('true', '1')
     if vo:
@@ -90,7 +90,7 @@ def _apply_camera_preset(context, *_):
         # publish_tf true)와 같이 돌면 같은 에지를 둘이 쓰고, rtabmap 의 map→odom 은 VO odom 기준이라
         # map→base 가 틀어진다. VO 는 외부 odom 이 없는 구성(핸드헬드·bag) 전용 — 매니저 프로파일은
         # ekf 프로세스를 항상 띄우므로 launch_odometry:=true 를 넣지 말 것.
-        print('[orbbec_rtabmap] VO 모드(launch_odometry:=true): rgbd_odometry 가 odom→base TF 를 발행한다. '
+        print('[aeirobot_rtabmap] VO 모드(launch_odometry:=true): rgbd_odometry 가 odom→base TF 를 발행한다. '
               'EKF(wio_ekf) 와 동시 기동 금지 — 핸드헬드/bag 전용.')
     resolved.update({
         'launch_odometry': 'true' if vo else 'false',
@@ -116,13 +116,13 @@ def _load_tuning(path):
     with open(path, encoding='utf-8') as f:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
-        raise RuntimeError(f'[orbbec_rtabmap] {path}: 최상위는 노드별 맵(rtabmap:/rgbd_odometry:)이어야 함')
+        raise RuntimeError(f'[aeirobot_rtabmap] {path}: 최상위는 노드별 맵(rtabmap:/rgbd_odometry:)이어야 함')
     out = {}
     for node, params in data.items():
         if params is None:
             params = {}
         if not isinstance(params, dict):
-            raise RuntimeError(f'[orbbec_rtabmap] {path}: {node}: 아래는 "Xxx/Yyy: 값" 맵이어야 함')
+            raise RuntimeError(f'[aeirobot_rtabmap] {path}: {node}: 아래는 "Xxx/Yyy: 값" 맵이어야 함')
         out[node] = {k: _s(v) for k, v in params.items()}
     return out
 

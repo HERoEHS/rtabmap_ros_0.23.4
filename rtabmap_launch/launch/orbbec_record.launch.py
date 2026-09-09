@@ -84,7 +84,7 @@ def generate_launch_description():
                         ('imu/data', '/rtabmap/imu')],
             condition=IfCondition(LaunchConfiguration('use_imu'))),
 
-        # Visual Odometry (orbbec_rtabmap.launch.py의 VO 설정과 동일)
+        # Visual Odometry (aeirobot_rtabmap.launch.py의 VO 설정과 동일)
         Node(
             package='rtabmap_odom', executable='rgbd_odometry', name='rgbd_odometry', output='screen',
             namespace='rtabmap',

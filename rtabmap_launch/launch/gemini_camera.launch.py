@@ -2,7 +2,7 @@
 # Orbbec Gemini 33x 드라이버 — lifelong/rtabmap 스택이 쓰는 고정 인자 한 벌.
 #
 # 호출처 두 곳이 같은 드라이버 설정을 써야 한다:
-#   · orbbec_rtabmap.launch.py  (camera:=orbbec launch_camera:=true — 단독 CLI 기동)
+#   · aeirobot_rtabmap.launch.py  (camera:=orbbec launch_camera:=true — 단독 CLI 기동)
 #   · aeirobot_slam_manager camera.launch.py (매니저 camera 프로세스, AEIROBOT_CAMERA=orbbec)
 # 인자를 두 군데 복사하면 해상도·QoS 가 갈라진다 — 여기서만 정한다.
 #
