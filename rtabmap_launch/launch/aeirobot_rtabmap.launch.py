@@ -28,11 +28,22 @@
 
 import os
 
-# ROS_WS 환경변수 필수
-ROS_WS = os.environ.get('ROS_WS')
-if not ROS_WS:
-    raise RuntimeError("ROS_WS 환경변수가 설정되지 않았습니다. 예: export ROS_WS=/path/to/ws")
-FEATURE_EXTRACTORS = os.path.join(ROS_WS, 'src', 'alice_navigation', 'localization', 'feature_extractors')
+# 특징 추출기(SuperPoint 가중치·SuperGlue 파이썬) 위치 — 소스 트리 `alice_navigation/localization/feature_extractors`.
+# ROS_WS env 를 먼저 보되, 그 아래에 실제로 없으면 이 런치 파일 자신의 위치에서 유도한다 (symlink-install 이라 realpath 가
+# 소스 트리를 가리킨다). Orin dev 이미지 ENV 가 x86 기본값(/home/aeirobot/aeirobot_sim_ws)이라 profile 셸을 안 탄 `docker exec` 에서
+# SuperPoint 가 "No model is loaded" 로 죽던 실측 (2026-09-10) — env 하나에 LC 전체를 걸지 않는다.
+def _feature_extractors_dir():
+    ws = os.environ.get('ROS_WS', '')
+    cands = [os.path.join(ws, 'src', 'alice_navigation', 'localization', 'feature_extractors')] if ws else []
+    here = os.path.dirname(os.path.realpath(__file__))          # .../localization/rtabmap_ros_0.23.4/rtabmap_launch/launch
+    cands.append(os.path.normpath(os.path.join(here, '..', '..', '..', 'feature_extractors')))
+    for c in cands:
+        if os.path.isfile(os.path.join(c, 'superpoint_v1.pt')):
+            return c
+    raise RuntimeError(f"feature_extractors 를 못 찾았다 (superpoint_v1.pt 없음): {cands} — ROS_WS 를 확인하거나 소스 트리에 가중치를 둘 것")
+
+FEATURE_EXTRACTORS = _feature_extractors_dir()
+ROS_WS = os.environ.get('ROS_WS') or os.path.normpath(os.path.join(FEATURE_EXTRACTORS, '..', '..', '..', '..'))
 
 # 맵 DB 저장 위치 (slam_manager 워크플로와 동일한 맵 루트 slam/).
 # ~/.ros 를 안 쓰는 이유는 aeirobot_slam_manager/lifelong_maps.py 헤더 주석 참고.
@@ -134,6 +145,13 @@ def launch_setup(context, *args, **kwargs):
 
     wait_imu = (LaunchConfiguration('wait_imu_to_init').perform(context)
                 or LaunchConfiguration('use_imu').perform(context)).lower() in ('true', '1')
+
+    # rtabmap_threads=0 은 "제한 없음" 인데 OMP_NUM_THREADS=0 을 그대로 주면 libtorch(SuperPoint)가
+    # "Invalid OMP_NUM_THREADS ... nthreads > 0" 예외를 특징 추출마다 찍는다 (2026-09-09 Orin 실측, 50회/분).
+    # 0 이면 env 를 아예 안 준다 (= 상류 기본, 코어 수만큼).
+    _thr = LaunchConfiguration('rtabmap_threads').perform(context).strip()
+    thread_env = ({} if _thr in ('', '0') else
+                  {k: _thr for k in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')})
 
     tuning = _load_tuning(LaunchConfiguration('rtabmap_params').perform(context))
     # detection_rate:=N 이 명시되면 yaml 의 Rtabmap/DetectionRate 를 덮는다 (빈 값 = yaml).
@@ -250,9 +268,7 @@ def launch_setup(context, *args, **kwargs):
             # 닿지 않으므로 노드에 직접 주입한다.
             # 값은 코어 수가 아니라 **CPU 예산**에서 유도 — Orin/Thor 이식 가능.
             additional_env={
-                'OMP_NUM_THREADS': LaunchConfiguration('rtabmap_threads'),
-                'OPENBLAS_NUM_THREADS': LaunchConfiguration('rtabmap_threads'),
-                'MKL_NUM_THREADS': LaunchConfiguration('rtabmap_threads'),
+                **thread_env,   # rtabmap_threads (0 이면 비움 — 위 launch_setup 주석)
                 # HERoEHS lifelong: glibc 아레나 상한 (메모리 성장 대책 — setup 3.78).
                 # rtabmap은 스레드 433개(3.44 실측)라 아레나가 코어 수 기준으로 열려
                 # 할당·해제 churn이 OS로 반환되지 않고 RSS로 쌓인다. khronos는 3.30에서
