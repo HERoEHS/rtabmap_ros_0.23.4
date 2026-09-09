@@ -24,12 +24,15 @@ def generate_launch_description():
         # rviz:=true 면 rtabmap 제공 rviz2(rgbd.rviz)를 rtabmap_viz 와 같이 띄운다.
         # 매니저 매핑 프로파일(lifelong_zed_mapping)만 켠다 — 로컬모드는 nav2 rviz 가 있다.
         DeclareLaunchArgument('rviz', default_value='false'),
+        # 기본 true = Isaac sim (/clock). 실물 zed2i(Orin) 는 use_sim_time:=false — 그 외 배선 동일.
+        DeclareLaunchArgument('use_sim_time', default_value='true',
+                              description='sim=true / 실물 zed2i=false'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 get_package_share_directory('rtabmap_launch'),
                 'launch', 'orbbec_rtabmap.launch.py')),
             launch_arguments={
-                'use_sim_time': 'true',
+                'use_sim_time': LaunchConfiguration('use_sim_time'),
                 'rviz': LaunchConfiguration('rviz'),
                 'launch_camera': 'false',
                 'launch_odometry': 'false',       # VO 대신 EKF odom
