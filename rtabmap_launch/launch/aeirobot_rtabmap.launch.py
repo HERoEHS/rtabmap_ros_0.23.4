@@ -183,10 +183,10 @@ def launch_setup(context, *args, **kwargs):
             condition=IfCondition(LaunchConfiguration('launch_odometry')),
             package='rtabmap_odom', executable='rgbd_odometry', name='rgbd_odometry', output='screen',
             # 튠 값(Odom/ResetCountdown 등)은 config/rtabmap_params.yaml rgbd_odometry: 절.
-            parameters=[dict(common_params, **tuning.get('rgbd_odometry', {}), **{
+            parameters=[{**common_params, **tuning.get('rgbd_odometry', {}), **{
                 'wait_imu_to_init': wait_imu,
                 'Reg/Force3DoF': ParameterValue(force_3dof, value_type=str),
-            })],
+            }}],
             remappings=remappings,
             # 로거는 네임스페이스 포함 이름(rtabmap.rgbd_odometry) — 노드명만 쓰면 무효과 (2026-07-23 실측)
             arguments=["--ros-args", "--log-level",
@@ -200,7 +200,7 @@ def launch_setup(context, *args, **kwargs):
             package='rtabmap_slam', executable='rtabmap', name='rtabmap', output='screen',
             # 튠 값(Grid/Vis/Kp/SuperPoint/Optimizer/LC 임계 …)은 config/rtabmap_params.yaml rtabmap: 절.
             # 여기 남은 것은 launch 인자·환경으로 계산되는 값만 — yaml 보다 뒤라 yaml 을 덮는다.
-            parameters=[dict(common_params, **tuning.get('rtabmap', {}), **{
+            parameters=[{**common_params, **tuning.get('rtabmap', {}), **{
                 'map_frame_id': LaunchConfiguration('map_frame_id'),
                 'publish_tf': LaunchConfiguration('publish_tf_map'),
                 'initial_pose': LaunchConfiguration('initial_pose'),
@@ -230,7 +230,7 @@ def launch_setup(context, *args, **kwargs):
                 # 모델 경로는 워크스페이스 위치(ROS_WS)에 묶여 있어 launch 가 계산한다
                 'SuperPoint/ModelPath': os.path.join(FEATURE_EXTRACTORS, 'superpoint_v1.pt'),
                 'PyMatcher/Path': os.path.join(FEATURE_EXTRACTORS, 'SuperGluePretrainedNetwork', 'rtabmap_superglue.py'),
-            }, **detection_override)],
+            }, **detection_override}],
             # odom_topic 기본 'odom'(상대) = 종전 그대로 VO(/rtabmap/odom) 소비.
             # 외부 odom(EKF 등) 쓸 땐 launch_odometry:=false odom_topic:=/odometry/filtered
             remappings=remappings + [('map', LaunchConfiguration('map_topic')),

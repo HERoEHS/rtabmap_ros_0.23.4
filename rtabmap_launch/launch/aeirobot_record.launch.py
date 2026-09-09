@@ -87,7 +87,7 @@ def generate_launch_description():
                               description='bag 이름 접두어 (타임스탬프 자동 부착)'),
         DeclareLaunchArgument('launch_odometry', default_value='false',
                               description='true: VO(rgbd_odometry) 기동·기록. false(기본): 외부 EKF /odometry/filtered 기록'),
-        DeclareLaunchArgument('monitor', default_value='true',
+        DeclareLaunchArgument('monitor', default_value='false',   # rqt_image_view 는 헤드리스/배포에 없음
                               description='녹화 중 컬러 영상 미리보기 창 (rqt_image_view)'),
         OpaqueFunction(function=_setup),
     ])
