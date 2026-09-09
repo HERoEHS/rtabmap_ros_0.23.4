@@ -1,0 +1,82 @@
+# RTAB-Map 코어 파라미터 튠 (orbbec_rtabmap.launch.py 가 읽는다)
+#
+# 왜 여기 있나: 배포본(SECURE)은 launch 파일 본문을 .so 로 봉인하므로 launch 안 값은
+# 고객이 못 만진다. 튠 대상 값은 이 yaml 에 두고, 배포본은 이 디렉토리를
+# ~/.aeirobot/config/rtabmap 으로 바인드 마운트한다 (docker/docs/55-user-config.md).
+# lifelong(orbbec_lifelong / zed_lifelong*) · zed_rtabmap 도 전부 orbbec_rtabmap.launch.py 를
+# include 하므로 이 한 벌이 rtabmap 을 쓰는 모든 경로에 적용된다.
+#
+# 형식: 노드별 평면 맵. ROS params-file(ros__parameters) 형식이 아니다 — launch 가 직접 읽어
+# 모든 값을 문자열로 정규화한 뒤 노드에 넘긴다. rtabmap 은 모든 코어 파라미터를 string 으로
+# 선언하므로 ROS params-file 로 직접 먹이면 0.11(double)·false(bool) 가 타입 충돌로 노드를
+# 죽인다. 여기서는 따옴표를 빼도 안전하다 (0.11 → '0.11', false → 'false').
+#
+# 우선순위 (뒤가 이김): 이 yaml < launch 인자로 계산되는 값(localization/force_3dof/memory_thr
+# 등, launch 파일 참조) < rtabmap_args:="--Rtabmap/LoopThr 0.2" 같은 CLI 직접 지정.
+# detection_rate:=N 을 명시하면 아래 Rtabmap/DetectionRate 를 덮는다.
+#
+# 파라미터 설명: rtabmap --params  또는 https://github.com/introlab/rtabmap/wiki/Advanced-parameter-tuning
+# 적용은 재기동 시 (rtabmap 은 init 때 한 번 읽는다).
+
+rtabmap:
+  # loop closure 감지율 [Hz]. SuperPoint/SuperGlue 가 GPU 를 쓰므로 작은 GPU 에서
+  # 세만틱과 경합하면 1 로 낮출 것. lifelong 스택은 TRT 전환으로 여유 확보 후 2 복원.
+  Rtabmap/DetectionRate: '2'
+  Mem/RecentWmRatio: '0.3'
+
+  # Grid Map 높이 필터링 (바닥면 제거용)
+  Grid/MinGroundHeight: '0.0'
+  Grid/MaxGroundHeight: '0.05'
+  Grid/MaxObstacleHeight: '1.0'
+  Grid/NormalsSegmentation: 'false'
+  Grid/RayTracing: 'true'
+  Grid/3D: 'false'
+
+  # 특징점/등록 — 11 = SuperPoint, 매처는 PyMatcher(SuperGlue). 모델 경로는 launch 가 ROS_WS 로 계산.
+  Reg/Strategy: '0'
+  Kp/DetectorStrategy: '11'
+  Vis/FeatureType: '11'
+  Vis/MaxFeatures: '1000'
+  Kp/MaxFeatures: '1000'
+  ORB/Gpu: 'false'
+  Mem/ImagePostDecimation: '1'
+  Mem/ImagePreDecimation: '1'
+  Vis/CorGuessWinSize: '0'
+  Vis/CorNNType: '6'
+  Reg/RepeatOnce: 'false'
+  Mem/RehearsalSimilarity: '0.6'
+  RGBD/OptimizeMaxError: '3.0'
+  Optimizer/Robust: 'false'
+
+  # 오탐 LC 대책 3종 (setup 3.69): 순간이동-복귀 반복의 원인이 "느슨한 PnP 가 부풀린
+  # 인라이어"로 지목됨. 336L 유효거리(~10m) 밖 특징은 depth 노이즈가 커 나쁜 3D 점이
+  # 되는데 4px 관용이 통과시켰다.
+  Kp/MaxDepth: '10.0'            # 15→10: 센서 신뢰 거리로 제한
+  Vis/MinInliers: '30'
+  Vis/PnPReprojError: '2'        # 4→2(기본값 복원): 한계 대응 인라이어 산입 차단
+  RGBD/ProximityPathFilteringRadius: '2.0'
+  RGBD/ProximityMaxGraphDepth: '100'
+  RGBD/LocalRadius: '15.0'
+  Rtabmap/LoopThr: '0.11'
+  RGBD/MaxOdomCacheSize: '30'    # 10→30: 오탐 사후 기각(OptimizeMaxError) 검사창 확대
+
+  # SuperPoint / SuperGlue
+  SuperPoint/Threshold: '0.005'
+  SuperPoint/NMSRadius: '4'
+  PyMatcher/Iterations: '40'
+  PyMatcher/Threshold: '0.2'
+  PyMatcher/Model: 'indoor'
+
+  # Prior 워크플로 (with_gui 와 동일)
+  Optimizer/PriorsIgnored: 'false'
+  Optimizer/Strategy: '2'        # GTSAM
+  Optimizer/Iterations: '100'
+  RGBD/OptimizeFromGraphEnd: 'false'
+  RGBD/StartAtOrigin: 'true'
+  Optimizer/LandmarksIgnored: 'false'
+
+# RGB-D 시각 오도메트리 (launch_odometry:=true 일 때만 뜬다 — zed/sim 은 EKF odom 사용)
+rgbd_odometry:
+  # 상실 시 즉시 리셋: 발산한 가짜 궤적이 지속되며 rtabmap 메모리를 폭주시킨 사고
+  # (setup 3.29) 재발 방지 — 리셋 후 재위치추정으로 복구
+  Odom/ResetCountdown: '1'

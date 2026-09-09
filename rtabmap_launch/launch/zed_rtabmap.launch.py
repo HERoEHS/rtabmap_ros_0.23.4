@@ -1,5 +1,5 @@
 #
-# ZED(Isaac sim) + rtabmap 부트스트랩 매핑 — orbbec_rtabmap.launch.py 의 zed/sim 프리셋 래퍼
+# ZED + rtabmap 부트스트랩 매핑 — orbbec_rtabmap.launch.py camera:=zed 의 얇은 별칭 (use_sim_time 기본 true)
 #
 # 실물 부트스트랩(orbbec_rtabmap.launch.py 직접 실행)의 sim 대응물:
 #   카메라 드라이버/VO/카메라 IMU 없이, Isaac(sim.launch.py)이 발행하는
@@ -34,16 +34,8 @@ def generate_launch_description():
             launch_arguments={
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
                 'rviz': LaunchConfiguration('rviz'),
-                'launch_camera': 'false',
-                'launch_odometry': 'false',       # VO 대신 EKF odom
-                'subscribe_odom_info': 'false',   # 외부 odom 은 odom_info 미발행
-                'odom_topic': '/odometry/filtered',
-                'use_imu': 'false',               # 카메라 내장 IMU 없음 (madgwick 불필요)
-                'wait_imu_to_init': 'false',
+                # 토픽·드라이버 없음·EKF odom·IMU 없음 배선은 camera=zed 프리셋이 채운다 (orbbec_rtabmap).
+                'camera': 'zed',
                 'force_3dof': 'true',             # 평면 주행 로봇 탑재 형상
-                # Isaac ZED 발행 토픽 (aeirobot_lifelong zed 프리셋과 동일 값)
-                'rgb_topic': '/aeirobot/vslam_left_image',
-                'depth_topic': '/aeirobot/vslam_depth',
-                'camera_info_topic': '/aeirobot/vslam_left_camera_info',
             }.items()),
     ])

@@ -7,10 +7,16 @@
 #   3. 카메라 드라이버(gemini_330_series.launch.py)를 depth_registration:=true 로 포함 실행
 #   4. localization argument로 매핑/위치추정 모드 선택 (GUI 서비스 전환 대신 런치 인자)
 #   5. force_3dof argument: 로봇 탑재 시 true, 손으로 들고 테스트 시 false
+#   6. camera argument: orbbec | zed — 카메라 종류는 sim/실물과 **별개**의 축이다.
+#      프리셋은 토픽 3종 + 드라이버 기동 여부만. 기본값은 env AEIROBOT_CAMERA
+#      (배포본 ~/.aeirobot/drive.env), 없으면 zed.
+#   7. odom 소스는 카메라와 무관하게 기본 외부 EKF(/odometry/filtered). VO 는 launch_odometry:=true.
 #
 # 사용법:
 #   매핑:     ros2 launch rtabmap_launch orbbec_rtabmap.launch.py
 #   위치추정: ros2 launch rtabmap_launch orbbec_rtabmap.launch.py localization:=true
+#   Orbbec:   ros2 launch rtabmap_launch orbbec_rtabmap.launch.py camera:=orbbec
+#   (기본 zed. sim 이면 use_sim_time:=true 추가)
 #
 # 토픽 (camera_name=camera 기준):
 #   rgb   : /camera/color/image_raw
@@ -32,8 +38,11 @@ MAP_ROOT = os.environ.get('AEIROBOT_MAP_ROOT') or os.path.expanduser('~/.aeirobo
 MAP_DIR = os.path.join(MAP_ROOT, 'slam')
 os.makedirs(MAP_DIR, exist_ok=True)
 
+import yaml
+
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
+from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction,
+                            SetLaunchConfiguration, TimerAction)
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -42,10 +51,92 @@ from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 
 
+# ── 카메라 프리셋 (camera:=orbbec|zed) — sim/실물 축과도, odom 소스 축과도 독립 ──
+# 프리셋이 정하는 건 **토픽 3종 + 드라이버를 여기서 띄우는지** 뿐이다.
+#   orbbec: 실물 Gemini, /camera/* — 드라이버(gemini_330_series)를 이 launch 가 띄운다
+#   zed:    실물 zed2i / Isaac ZED, /aeirobot/vslam_* — 드라이버는 외부(aeirobot_zed_camera / Isaac)
+# odom 소스는 카메라와 무관하게 **기본 외부 EKF(/odometry/filtered)** 다. 로봇에 달린 카메라는
+# 둘 다 EKF 를 쓴다 — orbbec 이 VO 를 썼던 건 로봇 미탑재 손테스트 시절 잔재. VO 가 필요하면
+# launch_odometry:=true 만 주면 odom_topic(odom)·subscribe_odom_info(true)·use_imu(orbbec 만 true)
+# 가 따라온다. 같은 이름 인자를 명시하면(빈 값이 아니면) 항상 인자가 이긴다.
+_CAM_PRESETS = {
+    'orbbec': {
+        'rgb_topic': '/camera/color/image_raw',
+        'depth_topic': '/camera/depth/image_raw',
+        'camera_info_topic': '/camera/color/camera_info',
+        'launch_camera': 'true',
+    },
+    'zed': {
+        'rgb_topic': '/aeirobot/vslam_left_image',
+        'depth_topic': '/aeirobot/vslam_depth',
+        'camera_info_topic': '/aeirobot/vslam_left_camera_info',
+        'launch_camera': 'false',
+    },
+}
+_CAMERA_DEFAULT = os.environ.get('AEIROBOT_CAMERA', 'zed')
+
+
+def _apply_camera_preset(context, *_):
+    """빈 인자만 채운다 (명시 인자 우선): 카메라 프리셋 → odom 소스 기본값(launch_odometry 기준)."""
+    cam = LaunchConfiguration('camera').perform(context)
+    if cam not in _CAM_PRESETS:
+        raise RuntimeError(f"[orbbec_rtabmap] camera:={cam!r} — 가능한 값: {', '.join(_CAM_PRESETS)}")
+    resolved = dict(_CAM_PRESETS[cam])
+    vo = (LaunchConfiguration('launch_odometry').perform(context) or 'false').lower() in ('true', '1')
+    if vo:
+        # rgbd_odometry 는 odom→base TF 를 발행한다(publish_tf 기본 true). EKF(robot_localization,
+        # publish_tf true)와 같이 돌면 같은 에지를 둘이 쓰고, rtabmap 의 map→odom 은 VO odom 기준이라
+        # map→base 가 틀어진다. VO 는 외부 odom 이 없는 구성(핸드헬드·bag) 전용 — 매니저 프로파일은
+        # ekf 프로세스를 항상 띄우므로 launch_odometry:=true 를 넣지 말 것.
+        print('[orbbec_rtabmap] VO 모드(launch_odometry:=true): rgbd_odometry 가 odom→base TF 를 발행한다. '
+              'EKF(wio_ekf) 와 동시 기동 금지 — 핸드헬드/bag 전용.')
+    resolved.update({
+        'launch_odometry': 'true' if vo else 'false',
+        'odom_topic': 'odom' if vo else '/odometry/filtered',
+        'subscribe_odom_info': 'true' if vo else 'false',   # 외부 odom 은 odom_info 미발행
+        'use_imu': 'true' if (vo and cam == 'orbbec') else 'false',   # madgwick 은 VO 중력 정렬용
+    })
+    return [SetLaunchConfiguration(k, v) for k, v in resolved.items()
+            if LaunchConfiguration(k).perform(context) == '']
+
+
+def _load_tuning(path):
+    """config/rtabmap_params.yaml → {노드이름: {'Xxx/Yyy': '문자열'}}.
+
+    rtabmap 코어 파라미터는 전부 string 선언이라 yaml 타입추론(0.11→double, false→bool)이
+    그대로 노드에 닿으면 declare 시 타입 충돌로 죽는다. 여기서 문자열로 정규화해 그 함정을
+    없앤다 — 고객이 따옴표를 빼도 안전. 배포본은 launch 본문이 .so 로 봉인되므로 튠 값은
+    이 yaml 이 유일한 손잡이다 (docker/docs/55-user-config.md)."""
+    def _s(v):
+        if isinstance(v, bool):
+            return 'true' if v else 'false'
+        return str(v)
+    with open(path, encoding='utf-8') as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise RuntimeError(f'[orbbec_rtabmap] {path}: 최상위는 노드별 맵(rtabmap:/rgbd_odometry:)이어야 함')
+    out = {}
+    for node, params in data.items():
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise RuntimeError(f'[orbbec_rtabmap] {path}: {node}: 아래는 "Xxx/Yyy: 값" 맵이어야 함')
+        out[node] = {k: _s(v) for k, v in params.items()}
+    return out
+
+
 def launch_setup(context, *args, **kwargs):
 
     localization = LaunchConfiguration('localization')
     force_3dof = LaunchConfiguration('force_3dof')
+
+    wait_imu = (LaunchConfiguration('wait_imu_to_init').perform(context)
+                or LaunchConfiguration('use_imu').perform(context)).lower() in ('true', '1')
+
+    tuning = _load_tuning(LaunchConfiguration('rtabmap_params').perform(context))
+    # detection_rate:=N 이 명시되면 yaml 의 Rtabmap/DetectionRate 를 덮는다 (빈 값 = yaml).
+    detection_rate = LaunchConfiguration('detection_rate').perform(context)
+    detection_override = {'Rtabmap/DetectionRate': detection_rate} if detection_rate else {}
 
     # 카메라가 sensor_data(Best Effort) QoS로 발행하므로 맞춰줌
     # rgbd_odometry는 이미지 QoS를 'qos'로, rtabmap/viz는 'qos_image'로 받음
@@ -89,12 +180,10 @@ def launch_setup(context, *args, **kwargs):
         Node(
             condition=IfCondition(LaunchConfiguration('launch_odometry')),
             package='rtabmap_odom', executable='rgbd_odometry', name='rgbd_odometry', output='screen',
-            parameters=[dict(common_params, **{
-                'wait_imu_to_init': LaunchConfiguration('wait_imu_to_init'),
+            # 튠 값(Odom/ResetCountdown 등)은 config/rtabmap_params.yaml rgbd_odometry: 절.
+            parameters=[dict(common_params, **tuning.get('rgbd_odometry', {}), **{
+                'wait_imu_to_init': wait_imu,
                 'Reg/Force3DoF': ParameterValue(force_3dof, value_type=str),
-                # 상실 시 즉시 리셋: 발산한 가짜 궤적이 지속되며 rtabmap 메모리를
-                # 폭주시킨 사고(setup 3.29) 재발 방지 — 리셋 후 재위치추정으로 복구
-                'Odom/ResetCountdown': '1',
             })],
             remappings=remappings,
             # 로거는 네임스페이스 포함 이름(rtabmap.rgbd_odometry) — 노드명만 쓰면 무효과 (2026-07-23 실측)
@@ -107,7 +196,9 @@ def launch_setup(context, *args, **kwargs):
         TimerAction(period=3.0, actions=[
         Node(
             package='rtabmap_slam', executable='rtabmap', name='rtabmap', output='screen',
-            parameters=[dict(common_params, **{
+            # 튠 값(Grid/Vis/Kp/SuperPoint/Optimizer/LC 임계 …)은 config/rtabmap_params.yaml rtabmap: 절.
+            # 여기 남은 것은 launch 인자·환경으로 계산되는 값만 — yaml 보다 뒤라 yaml 을 덮는다.
+            parameters=[dict(common_params, **tuning.get('rtabmap', {}), **{
                 'map_frame_id': LaunchConfiguration('map_frame_id'),
                 'publish_tf': LaunchConfiguration('publish_tf_map'),
                 'initial_pose': LaunchConfiguration('initial_pose'),
@@ -129,65 +220,15 @@ def launch_setup(context, *args, **kwargs):
                 'Mem/InitWMWithAllNodes': ParameterValue(
                     PythonExpression(["'true' if '", localization, "' == 'true' else 'false'"]), value_type=str),
 
-                'Mem/RecentWmRatio': '0.3',
-
-                # Grid Map 높이 필터링 파라미터 (바닥면 제거용)
-                'Grid/MinGroundHeight': '0.0',
-                'Grid/MaxGroundHeight': '0.05',
-                'Grid/MaxObstacleHeight': '1.0',
-                'Grid/NormalsSegmentation': 'false',
-                'Grid/RayTracing': 'true',
-
-                'Grid/3D': 'false',
                 # 3DoF 강제는 평면 주행 로봇 전용. 손으로 들고 테스트하면 pitch/roll/z가
                 # 깎여서 이동량이 노드 생성 임계값에 못 미쳐 맵이 안 자람 (WM=1 고정 증상)
                 'Reg/Force3DoF': ParameterValue(force_3dof, value_type=str),
                 'RGBD/ForceOdom3DoF': ParameterValue(force_3dof, value_type=str),
-                'Reg/Strategy': '0',
-                'Kp/DetectorStrategy': '11',
-                'Vis/FeatureType': '11',
-                'Vis/MaxFeatures': '1000',
-                'ORB/Gpu': 'false',
-                'Mem/ImagePostDecimation': '1',
-                'Mem/ImagePreDecimation': '1',
+
+                # 모델 경로는 워크스페이스 위치(ROS_WS)에 묶여 있어 launch 가 계산한다
                 'SuperPoint/ModelPath': os.path.join(FEATURE_EXTRACTORS, 'superpoint_v1.pt'),
                 'PyMatcher/Path': os.path.join(FEATURE_EXTRACTORS, 'SuperGluePretrainedNetwork', 'rtabmap_superglue.py'),
-                'Vis/CorGuessWinSize': '0',
-                'Vis/CorNNType': '6',
-                'Reg/RepeatOnce': 'false',
-                'Kp/MaxFeatures': '1000',
-                'Mem/RehearsalSimilarity': '0.6',
-                'RGBD/OptimizeMaxError': '3.0',
-                'Optimizer/Robust': 'false',
-                # LC rate [Hz] — SuperPoint/SuperGlue가 GPU를 쓰므로 작은 GPU에서 세만틱과 경합 시 낮출 것
-        'Rtabmap/DetectionRate': ParameterValue(LaunchConfiguration('detection_rate'), value_type=str),
-                # 오탐 LC 대책 3종 (setup 3.69): 순간이동-복귀 반복의 원인이
-                # "느슨한 PnP가 부풀린 인라이어"로 지목됨. 336L 유효거리(~10m) 밖
-                # 특징은 depth 노이즈가 커 나쁜 3D 점이 되는데 4px 관용이 통과시켰다.
-                'Kp/MaxDepth': '10.0',        # 15→10: 센서 신뢰 거리로 제한
-                'Vis/MinInliers': '30',
-                'Vis/PnPReprojError': '2',    # 4→2(기본값 복원): 한계 대응 인라이어 산입 차단
-                'RGBD/ProximityPathFilteringRadius': '2.0',
-                'RGBD/ProximityMaxGraphDepth': '100',
-                'RGBD/LocalRadius': '15.0',
-                'Rtabmap/LoopThr': '0.11',
-                'RGBD/MaxOdomCacheSize': '30',  # 10→30: 오탐 사후 기각(OptimizeMaxError) 검사창 확대
-
-                ## 레전드 파라미터 ##
-                'SuperPoint/Threshold': '0.005',
-                'SuperPoint/NMSRadius': '4',
-                'PyMatcher/Iterations': '40',
-                'PyMatcher/Threshold': '0.2',
-                'PyMatcher/Model': 'indoor',
-
-                ## Prior 워크플로 (with_gui와 동일) ##
-                'Optimizer/PriorsIgnored': 'false',
-                'Optimizer/Strategy': '2',            # GTSAM
-                'Optimizer/Iterations': '100',
-                'RGBD/OptimizeFromGraphEnd': 'false',
-                'RGBD/StartAtOrigin': 'true',
-                'Optimizer/LandmarksIgnored': 'false',
-            })],
+            }, **detection_override)],
             # odom_topic 기본 'odom'(상대) = 종전 그대로 VO(/rtabmap/odom) 소비.
             # 외부 odom(EKF 등) 쓸 땐 launch_odometry:=false odom_topic:=/odometry/filtered
             remappings=remappings + [('map', LaunchConfiguration('map_topic')),
@@ -253,7 +294,13 @@ def generate_launch_description():
         ## 모드 선택
         DeclareLaunchArgument('localization', default_value='true', description='true: 기존 DB로 위치추정 모드, false: 매핑 모드'),
         DeclareLaunchArgument('force_3dof',   default_value='false', description='true: 평면(3DoF) 강제 — 로봇 탑재 시 사용. 손으로 들고 테스트할 땐 false'),
-        DeclareLaunchArgument('detection_rate', default_value='2', description='loop closure 감지율 [Hz]. GPU 경합 시(라이프롱 스택 노트북 구동) 1 권장'),
+        DeclareLaunchArgument('rtabmap_params',
+                              default_value=os.path.join(get_package_share_directory('rtabmap_launch'),
+                                                         'config', 'rtabmap_params.yaml'),
+                              description='rtabmap/rgbd_odometry 코어 파라미터 튠 yaml (노드별 평면 맵, 값은 문자열로 정규화)'),
+        DeclareLaunchArgument('detection_rate', default_value='',
+                              description='loop closure 감지율 [Hz]. 빈 값(기본)=yaml 의 Rtabmap/DetectionRate. '
+                                          'GPU 경합 시(라이프롱 스택 노트북 구동) 1 권장'),
         DeclareLaunchArgument('memory_thr', default_value='0',
                               description='Rtabmap/MemoryThr — WM 노드 수 상한(0=무제한). 장시간 localization 운영 시 350 권장 (setup 3.29)'),
         DeclareLaunchArgument('rtabmap_threads', default_value='0',
@@ -274,9 +321,9 @@ def generate_launch_description():
         DeclareLaunchArgument('odom_correction', default_value='true', description='loop closing 상황에서 odom tf 옮길건지 말건지 선택하는 변수'),
 
         DeclareLaunchArgument('use_sim_time', default_value='false', description='Use simulation (Gazebo) clock if true'),
-        DeclareLaunchArgument('launch_odometry', default_value='true',
+        DeclareLaunchArgument('launch_odometry', default_value='',   # 빈 값 = false (외부 EKF odom)
                               description='rgbd_odometry 실행 여부. bag 재생 검증(odom이 bag에 있음)이면 false'),
-        DeclareLaunchArgument('subscribe_odom_info', default_value='true',
+        DeclareLaunchArgument('subscribe_odom_info', default_value='',
                               description='odom_info 구독. bag 재생 검증(미수록)이면 false'),
         DeclareLaunchArgument('log_level',    default_value='info', description="ROS logging level (debug, info, warn, error)."),
 
@@ -305,60 +352,43 @@ def generate_launch_description():
 
         # 외부 오도매트리 (sim/EKF): 기본 'odom'(상대 = VO 출력 /rtabmap/odom, 종전 동작).
         # launch_odometry:=false 와 함께 /odometry/filtered 등 절대 토픽 지정
-        DeclareLaunchArgument('odom_topic', default_value='odom',
+        DeclareLaunchArgument('odom_topic', default_value='',
                               description='rtabmap odom 입력. 기본은 VO(rgbd_odometry) 출력. '
                                           '외부 odom(robot_localization EKF)이면 launch_odometry:=false 와 함께 지정'),
 
-        # RGB-D 토픽 (orbbec 카메라, camera_name=camera 기준)
-        DeclareLaunchArgument('rgb_topic',         default_value='/camera/color/image_raw',   description=''),
-        DeclareLaunchArgument('depth_topic',       default_value='/camera/depth/image_raw',   description=''),
-        DeclareLaunchArgument('camera_info_topic', default_value='/camera/color/camera_info', description=''),
+        # RGB-D 토픽 — 빈 값(기본)이면 camera 프리셋 (orbbec: /camera/*, zed: /aeirobot/vslam_*)
+        DeclareLaunchArgument('rgb_topic',         default_value='', description='빈 값 = camera 프리셋'),
+        DeclareLaunchArgument('depth_topic',       default_value='', description='빈 값 = camera 프리셋'),
+        DeclareLaunchArgument('camera_info_topic', default_value='', description='빈 값 = camera 프리셋'),
 
         # imu (use_imu:=true → 카메라 내장 IMU 활성화 + madgwick 필터로 orientation 추정 → VO 중력 정렬)
-        DeclareLaunchArgument('use_imu',          default_value='true',         description='카메라 내장 IMU를 VO 중력 정렬에 사용 (imu_filter_madgwick 패키지 필요)'),
+        DeclareLaunchArgument('use_imu',          default_value='',             description='카메라 내장 IMU를 VO 중력 정렬에 사용 (imu_filter_madgwick 패키지 필요). 빈 값 = orbbec+VO 일 때만 true'),
         DeclareLaunchArgument('imu_topic',        default_value='/rtabmap/imu',  description='orientation이 채워진 IMU 토픽 (madgwick 필터 출력)'),
-        DeclareLaunchArgument('wait_imu_to_init', default_value=LaunchConfiguration('use_imu'), description=''),
+        # 기본 = use_imu. 빈 값이면 프리셋 적용 뒤 launch_setup 에서 use_imu 값을 따른다
+        # (DeclareLaunchArgument 의 default 는 선언 시점에 굳어 프리셋 전 값 '' 을 잡는다).
+        DeclareLaunchArgument('wait_imu_to_init', default_value='', description='빈 값 = use_imu 와 동일'),
 
         # 카메라 드라이버
-        DeclareLaunchArgument('launch_camera', default_value='true', description='카메라 드라이버 포함 실행 여부 (이미 켜져 있으면 false)'),
+        DeclareLaunchArgument('launch_camera', default_value='', description='카메라 드라이버 포함 실행 여부 (이미 켜져 있으면 false). 빈 값 = camera 프리셋'),
+
+        # 카메라 종류 — sim/실물과 별개 축. 빈 인자를 프리셋·odom 기본값으로 여기서 채운다.
+        # 이 OpaqueFunction 이 아래 노드/include 보다 먼저 와야 한다 (IfCondition·remap 이 그 값을 읽는다).
+        DeclareLaunchArgument('camera', default_value=_CAMERA_DEFAULT,
+                              description='orbbec | zed (토픽·드라이버만 바뀜, odom 소스는 별개). 기본 = env AEIROBOT_CAMERA, 없으면 zed'),
+        OpaqueFunction(function=_apply_camera_preset),
     ] + _orbbec_camera_include() + [
         OpaqueFunction(function=launch_setup)
     ])
 
 
 def _orbbec_camera_include():
-    """orbbec_camera 드라이버 include — 미빌드 머신(sim, camera:=zed)에선 스킵.
-
-    get_package_share_directory 가 런치 파싱 시점에 무조건 평가되므로,
-    패키지가 없으면 launch_camera:=false 여도 스택 전체가 죽는다 — 여기서 가드."""
-    from ament_index_python.packages import PackageNotFoundError
-    try:
-        launch_dir = os.path.join(get_package_share_directory('orbbec_camera'), 'launch')
-    except PackageNotFoundError:
-        print('[orbbec_rtabmap] orbbec_camera 패키지 없음 — 카메라 드라이버 include 생략 '
-              '(sim/zed 구성이면 정상, 실물이면 OrbbecSDK_ROS2 빌드 필요)')
-        return []
+    """Gemini 드라이버 — 인자 한 벌은 gemini_camera.launch.py (매니저 camera 프로세스와 공유).
+    launch_camera 는 프리셋이 채운다(orbbec=true, zed=false). 매니저 아래선 false 로 넘어온다."""
     return [
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([launch_dir, '/gemini_330_series.launch.py']),
-            launch_arguments={'depth_registration': 'true',
-                              'enable_frame_sync': 'true',
-                              # 640x480@15 고정: 네이티브(1280x800)는 픽셀 3.3배라 VO 단일스레드가
-                              # 코어 포화로 3.9Hz까지 붕괴 (2026-07-22 풀스택 실측). 해상도가 최대 지렛대
-                              'color_width': '640', 'color_height': '480', 'color_fps': '15',
-                              'depth_width': '640', 'depth_height': '480', 'depth_fps': '15',
-                              # depth 노이즈 필터 (실기 TSDF 메시 품질 — 시뮬 대비 괴리 완화)
-                              'enable_spatial_filter': 'true',
-                              'enable_temporal_filter': 'true',
-                              # Reliable 발행: rtabmap(Best Effort 구독)과 Khronos(Reliable 구독) 모두 호환.
-                              # sensor_data(Best Effort) 기본값이면 Khronos가 camera_info를 못 받아 초기화에 갇힘
-                              'color_qos': 'default',
-                              'depth_qos': 'default',
-                              'color_camera_info_qos': 'default',
-                              'depth_camera_info_qos': 'default',
-                              'enable_accel': LaunchConfiguration('use_imu'),
-                              'enable_gyro': LaunchConfiguration('use_imu'),
-                              'enable_sync_output_accel_gyro': LaunchConfiguration('use_imu')}.items(),
+            PythonLaunchDescriptionSource(os.path.join(
+                get_package_share_directory('rtabmap_launch'), 'launch', 'gemini_camera.launch.py')),
+            launch_arguments={'use_imu': LaunchConfiguration('use_imu')}.items(),
             condition=IfCondition(LaunchConfiguration('launch_camera')),
         ),
     ]
