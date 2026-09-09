@@ -1,7 +1,9 @@
 #
 # Orbbec Gemini 330 시리즈 (330L/336L) + RTAB-Map
 #
-# rtabmap_with_gui.launch.py 구조를 따르되 orbbec RGB-D 입력에 맞게 변경:
+# RGB-D + rtabmap 본체 — 카메라(zed|orbbec)·odom(EKF|VO)·sim/실물은 인자 3개(camera, launch_odometry,
+# use_sim_time)로 고른다. 기본값 = 제품 형상(env AEIROBOT_CAMERA→zed, EKF, 실물, force_3dof).
+# (구 rtabmap_with_gui 구조에서 출발 — 그 런치는 2026-09-09 삭제됨.)
 #   1. 스테레오 입력 → RGB-D 입력 (subscribe_depth)
 #   2. 외부 odom(/odometry/filtered) → rtabmap_odom rgbd_odometry (VO) 노드 추가
 #   3. 카메라 드라이버(gemini_330_series.launch.py)를 depth_registration:=true 로 포함 실행
@@ -293,7 +295,7 @@ def generate_launch_description():
         # Arguments
         ## 모드 선택
         DeclareLaunchArgument('localization', default_value='true', description='true: 기존 DB로 위치추정 모드, false: 매핑 모드'),
-        DeclareLaunchArgument('force_3dof',   default_value='false', description='true: 평면(3DoF) 강제 — 로봇 탑재 시 사용. 손으로 들고 테스트할 땐 false'),
+        DeclareLaunchArgument('force_3dof', default_value='true', description='true: 평면(3DoF) 강제 — 로봇 탑재 시 사용. 손으로 들고 테스트할 땐 false'),
         DeclareLaunchArgument('rtabmap_params',
                               default_value=os.path.join(get_package_share_directory('rtabmap_launch'),
                                                          'config', 'rtabmap_params.yaml'),
