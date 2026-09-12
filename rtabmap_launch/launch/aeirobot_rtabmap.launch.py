@@ -216,6 +216,8 @@ def launch_setup(context, *args, **kwargs):
         TimerAction(period=3.0, actions=[
         Node(
             package='rtabmap_slam', executable='rtabmap', name='rtabmap', output='screen',
+            # GB급 DB의 사전 저장이 끝나기 전에 launch가 종료 신호를 올리지 않는다.
+            sigterm_timeout='60', sigkill_timeout='10',
             # 튠 값(Grid/Vis/Kp/SuperPoint/Optimizer/LC 임계 …)은 config/rtabmap_params.yaml rtabmap: 절.
             # 여기 남은 것은 launch 인자·환경으로 계산되는 값만 — yaml 보다 뒤라 yaml 을 덮는다.
             parameters=[{**common_params, **tuning.get('rtabmap', {}), **{
