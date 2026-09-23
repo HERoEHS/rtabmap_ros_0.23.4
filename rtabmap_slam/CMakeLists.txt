@@ -203,4 +203,11 @@ install(DIRECTORY include/
    FILES_MATCHING PATTERN "*.h"
 )
 
+if(BUILD_TESTING)
+  enable_testing()
+  add_executable(test_memory_compatibility test/test_memory_compatibility.cpp)
+  target_compile_features(test_memory_compatibility PRIVATE cxx_std_11)
+  add_test(NAME memory_compatibility COMMAND test_memory_compatibility)
+endif()
+
 ament_package()

@@ -63,6 +63,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rtabmap/core/util3d_transforms.h>
 #include <rtabmap/core/util3d_surface.h>
 #include <rtabmap/core/Memory.h>
+#include "rtabmap_slam/MemoryCompatibility.h"
 #include <rtabmap/core/OdometryEvent.h>
 #include <rtabmap/core/Version.h>
 #include <rtabmap/core/OccupancyGrid.h>
@@ -2574,8 +2575,8 @@ void CoreWrapper::process(
 				if(rtabmap_.getMemory() == 0 ||
 					filteredPoses.size() == 0 ||
 					rtabmap_.getMemory()->getLastSignatureId() != filteredPoses.rbegin()->first ||
-					rtabmap_.getMemory()->getLastWorkingSignature() == 0 ||
-					rtabmap_.getMemory()->getLastWorkingSignature()->sensorData().gridCellSize() == 0 ||
+					rtabmap_slam::lastWorkingSignature(rtabmap_.getMemory()) == 0 ||
+					rtabmap_slam::lastWorkingSignature(rtabmap_.getMemory())->sensorData().gridCellSize() == 0 ||
 					(!mapsManager_.getLocalMapMaker()->isGridFromDepth() && data.laserScanRaw().is2d())) // 2d laser scan would fill empty space for latest data
 				{
 					SensorData tmpData = data;
@@ -3997,9 +3998,9 @@ void CoreWrapper::getNodeDataCallback(
 			req->grid?"true":"false",
 			req->user_data?"true":"false");
 
-	if(req->ids.empty() && rtabmap_.getMemory() && rtabmap_.getMemory()->getLastWorkingSignature())
+	if(req->ids.empty() && rtabmap_.getMemory() && rtabmap_slam::lastWorkingSignature(rtabmap_.getMemory()))
 	{
-		req->ids.push_back(rtabmap_.getMemory()->getLastWorkingSignature()->id());
+		req->ids.push_back(rtabmap_slam::lastWorkingSignature(rtabmap_.getMemory())->id());
 	}
 	for(size_t i=0; i<req->ids.size(); ++i)
 	{
