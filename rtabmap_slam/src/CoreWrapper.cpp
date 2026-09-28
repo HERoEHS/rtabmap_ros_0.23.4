@@ -682,10 +682,16 @@ CoreWrapper::CoreWrapper(const rclcpp::NodeOptions & options) :
 	detectMoreLoopClosuresSrv_ = this->create_service<rtabmap_msgs::srv::DetectMoreLoopClosures>(servicePrefix + "detect_more_loop_closures", std::bind(&CoreWrapper::detectMoreLoopClosuresCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), processingCallbackGroup_);
 	globalBundleAdjustmentSrv_ = this->create_service<rtabmap_msgs::srv::GlobalBundleAdjustment>(servicePrefix + "global_bundle_adjustment", std::bind(&CoreWrapper::globalBundleAdjustmentCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), processingCallbackGroup_);
 	cleanupLocalGridsSrv_ = this->create_service<rtabmap_msgs::srv::CleanupLocalGrids>(servicePrefix + "cleanup_local_grids", std::bind(&CoreWrapper::cleanupLocalGridsCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), processingCallbackGroup_);
+	// HERoEHS lifelong: 유지보수 그룹(특징 제거·삽입·격리·삭제)은 처리 그룹과 별개로 돈다(처리 그룹에 넣으면 0초 syncTimer_에
+	// 밀려 디스패치 안 됨). 그래서 둘의 직렬화는 syncDataMutex_ 한 개로만 이뤄진다: processAsync 뿐 아니라 rtabmap_ 을 만지는
+	// 처리 그룹 콜백(publish_map·get_node_data·republish_node_data 등)도 전부 이 잠금을 먼저 잡는다. 빠지면 삭제된
+	// Signature 를 읽거나(use-after-free) 반복 중인 컨테이너가 바뀐다. 새 콜백을 추가하면 같은 규칙을 따를 것.
 	maintenanceCallbackGroup_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 	removeFeaturesInBoxSrv_ = this->create_service<rtabmap_msgs::srv::RemoveFeaturesInBox>(servicePrefix + "remove_features_in_box", std::bind(&CoreWrapper::removeFeaturesInBoxCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), maintenanceCallbackGroup_);
 	removeFeaturesSrv_ = this->create_service<rtabmap_msgs::srv::RemoveFeatures>(servicePrefix + "remove_features", std::bind(&CoreWrapper::removeFeaturesCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), maintenanceCallbackGroup_);
 	ingestCurrentFrameSrv_ = this->create_service<rtabmap_msgs::srv::IngestCurrentFrame>(servicePrefix + "ingest_current_frame", std::bind(&CoreWrapper::ingestCurrentFrameCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), maintenanceCallbackGroup_);
+	setNodesQuarantineSrv_ = this->create_service<rtabmap_msgs::srv::SetNodesQuarantine>(servicePrefix + "set_nodes_quarantine", std::bind(&CoreWrapper::setNodesQuarantineCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), maintenanceCallbackGroup_);
+	deleteNodesSrv_ = this->create_service<rtabmap_msgs::srv::DeleteNodes>(servicePrefix + "delete_nodes", std::bind(&CoreWrapper::deleteNodesCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), maintenanceCallbackGroup_);
 	setModeLocalizationSrv_ = this->create_service<std_srvs::srv::Empty>(servicePrefix + "set_mode_localization", std::bind(&CoreWrapper::setModeLocalizationCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), processingCallbackGroup_);
 	setModeMappingSrv_ = this->create_service<std_srvs::srv::Empty>(servicePrefix + "set_mode_mapping", std::bind(&CoreWrapper::setModeMappingCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), processingCallbackGroup_);
 	getNodeDataSrv_ = this->create_service<rtabmap_msgs::srv::GetNodeData>(servicePrefix + "get_node_data", std::bind(&CoreWrapper::getNodeDataCallback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3), rclcpp::ServicesQoS(), processingCallbackGroup_);
@@ -945,6 +951,7 @@ CoreWrapper::CoreWrapper(const rclcpp::NodeOptions & options) :
 				{
 					return;
 				}
+				UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: parseParameters 가 유지보수 콜백(삽입 등)과 겹치지 않게
 				RCLCPP_INFO(this->get_logger(), "Parameters event received!");
 				if(event->changed_parameters.size())
 				{
@@ -1165,6 +1172,7 @@ void CoreWrapper::saveParameters(const std::string & configFile)
 
 void CoreWrapper::defaultCallback(const sensor_msgs::msg::Image::ConstSharedPtr imageMsg)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	if(!paused_)
 	{
 		rclcpp::Time stamp = imageMsg->header.stamp;
@@ -1913,6 +1921,7 @@ void CoreWrapper::commonLaserScanCallback(
 					rtabmap_.getMemory() && uStrNumCmp(rtabmap_.getMemory()->getDatabaseVersion(), "0.11.10") < 0))
 			{
 				RCLCPP_ERROR(this->get_logger(), "Could not convert laser scan msg! Aborting rtabmap update...");
+				syncDataMutex_.unlock(); // HERoEHS: upstream 은 잠근 채 반환 — 이후 처리·서비스 전부 영구 대기
 				return;
 			}
 		}
@@ -1931,6 +1940,7 @@ void CoreWrapper::commonLaserScanCallback(
 					scanCloudIs2d_))
 			{
 				RCLCPP_ERROR(this->get_logger(), "Could not convert 3d laser scan msg! Aborting rtabmap update...");
+				syncDataMutex_.unlock(); // HERoEHS: upstream 은 잠근 채 반환 — 이후 처리·서비스 전부 영구 대기
 				return;
 			}
 		}
@@ -3106,6 +3116,7 @@ void CoreWrapper::dockingStateCallback(const std_msgs::msg::Bool::SharedPtr msg)
 
 void CoreWrapper::republishNodeDataCallback(const std_msgs::msg::Int32MultiArray::ConstSharedPtr msg)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	rtabmap_.addNodesToRepublish(msg->data);
 }
 
@@ -3128,6 +3139,7 @@ void CoreWrapper::interOdomInfoCallback(const nav_msgs::msg::Odometry::ConstShar
 
 void CoreWrapper::initialPoseCallback(const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	Transform mapToPose = Transform::getIdentity();
 	if(msg->header.frame_id.empty())
 	{
@@ -3173,6 +3185,7 @@ void CoreWrapper::goalCommonCallback(
 		const rclcpp::Time & stamp,
 		double * planningTime)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	UTimer timer;
 
 	if(id == 0 && !label.empty() && rtabmap_.getMemory())
@@ -3360,6 +3373,7 @@ void CoreWrapper::updateRtabmapCallback(
 		const std::shared_ptr<std_srvs::srv::Empty::Request>,
 		std::shared_ptr<std_srvs::srv::Empty::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	for(rtabmap::ParametersMap::iterator iter=parameters_.begin(); iter!=parameters_.end(); ++iter)
 	{
 		std::string paramValue;
@@ -3417,6 +3431,7 @@ void CoreWrapper::resetRtabmapCallback(
 		const std::shared_ptr<std_srvs::srv::Empty::Request>,
 		std::shared_ptr<std_srvs::srv::Empty::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(this->get_logger(), "rtabmap: Reset");
 	rtabmap_.resetMemory();
 
@@ -3495,6 +3510,7 @@ void CoreWrapper::loadDatabaseCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::LoadDatabase::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::LoadDatabase::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(get_logger(), "LoadDatabase: Loading database (%s, clear=%s)...", req->database_path.c_str(), req->clear?"true":"false");
 	std::string newDatabasePath = uReplaceChar(req->database_path, '~', UDirectory::homeDir());
 	std::string dir = UDirectory::getDir(newDatabasePath);
@@ -3666,6 +3682,7 @@ void CoreWrapper::triggerNewMapCallback(
 		const std::shared_ptr<std_srvs::srv::Empty::Request>,
 		std::shared_ptr<std_srvs::srv::Empty::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(this->get_logger(), "rtabmap: Trigger new map");
 	rtabmap_.triggerNewMap();
 }
@@ -3675,6 +3692,7 @@ void CoreWrapper::backupDatabaseCallback(
 		const std::shared_ptr<std_srvs::srv::Empty::Request>,
 		std::shared_ptr<std_srvs::srv::Empty::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(this->get_logger(), "Backup: Saving memory...");
 	bool saveDatabase = true;
 	if(rtabmap_.getMemory())
@@ -3775,6 +3793,7 @@ void CoreWrapper::detectMoreLoopClosuresCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::DetectMoreLoopClosures::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::DetectMoreLoopClosures::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_WARN(get_logger(), "Detect more loop closures service called");
 
 	UTimer timer;
@@ -3926,6 +3945,19 @@ void CoreWrapper::ingestCurrentFrameCallback(
 		res->status = uFormat("stale frame (%.1fs old)", age);
 		return;
 	}
+	// 삽입 게이트(feature_persistence 의 독립 증인)는 **발행된** map→odom 으로 위치를 검증한다. 도킹 중 고정·pelvis
+	// 오버라이드·odom_correction 끔이면 그것이 rtabmap 보정과 달라, 검증한 위치와 삽입될 위치가 어긋난다 — 거부.
+	{
+		std::lock_guard<std::mutex> tfLock(mapToOdomMutex_);
+		const rtabmap::Transform corr = rtabmap_.getMapCorrection();
+		const rtabmap::Transform d = (!mapToOdom_.isNull() && !corr.isNull()) ? mapToOdom_.inverse() * corr : rtabmap::Transform();
+		if(!d.isNull() && (d.getNorm() > 0.01f || fabs(Eigen::AngleAxisf(d.toEigen3f().linear()).angle()) > 0.01f))
+		{
+			res->status = "published map->odom differs from rtabmap correction (docking/override) - refused";
+			RCLCPP_WARN(get_logger(), "IngestCurrentFrame: %s", res->status.c_str());
+			return;
+		}
+	}
 	rtabmap::Transform mapPose = rtabmap_.getMapCorrection() * syncData_.odom;
 	double lv = req->linear_variance > 0.0 ? req->linear_variance : 0.01;
 	double av = req->angular_variance > 0.0 ? req->angular_variance : 0.005;
@@ -3939,11 +3971,38 @@ void CoreWrapper::ingestCurrentFrameCallback(
 			res->status.c_str(), id, age);
 }
 
+void CoreWrapper::setNodesQuarantineCallback(
+		const std::shared_ptr<rmw_request_id_t>,
+		const std::shared_ptr<rtabmap_msgs::srv::SetNodesQuarantine::Request> req,
+		std::shared_ptr<rtabmap_msgs::srv::SetNodesQuarantine::Response> res)
+{
+	// HERoEHS lifelong: 삽입 노드 격리 해제(보호관찰 통과)/재격리. processAsync/process()와 syncDataMutex_로 직렬화.
+	UScopeMutex lock(syncDataMutex_);
+	std::vector<int> ids(req->node_ids.begin(), req->node_ids.end());
+	res->applied = rtabmap_.setNodesQuarantined(ids, req->quarantined);
+	RCLCPP_INFO(get_logger(), "SetNodesQuarantine: %d/%zu nodes %s",
+			res->applied, ids.size(), req->quarantined?"quarantined":"released");
+}
+
+void CoreWrapper::deleteNodesCallback(
+		const std::shared_ptr<rmw_request_id_t>,
+		const std::shared_ptr<rtabmap_msgs::srv::DeleteNodes::Request> req,
+		std::shared_ptr<rtabmap_msgs::srv::DeleteNodes::Response> res)
+{
+	// HERoEHS lifelong: 보호관찰 불합격·미판정 삽입 노드 영구 삭제. processAsync/process()와 syncDataMutex_로 직렬화.
+	UScopeMutex lock(syncDataMutex_);
+	std::vector<int> ids(req->node_ids.begin(), req->node_ids.end());
+	std::vector<int> deleted = rtabmap_.deleteNodes(ids);
+	res->deleted.assign(deleted.begin(), deleted.end());
+	RCLCPP_WARN(get_logger(), "DeleteNodes: %zu/%zu nodes deleted", deleted.size(), ids.size());
+}
+
 void CoreWrapper::cleanupLocalGridsCallback(
 		const std::shared_ptr<rmw_request_id_t>,
 		const std::shared_ptr<rtabmap_msgs::srv::CleanupLocalGrids::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::CleanupLocalGrids::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_WARN(get_logger(), "Cleanup local grids service called");
 	UTimer timer;
 	int radius = 1;
@@ -3993,6 +4052,7 @@ void CoreWrapper::globalBundleAdjustmentCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::GlobalBundleAdjustment::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::GlobalBundleAdjustment::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_WARN(get_logger(), "Global bundle adjustment service called");
 
 	UTimer timer;
@@ -4039,6 +4099,7 @@ void CoreWrapper::setModeLocalizationCallback(
 		const std::shared_ptr<std_srvs::srv::Empty::Request>,
 		std::shared_ptr<std_srvs::srv::Empty::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(this->get_logger(), "rtabmap: Set localization mode");
 	rtabmap::ParametersMap parameters;
 	parameters.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemIncrementalMemory(), "false"));
@@ -4052,6 +4113,7 @@ void CoreWrapper::setModeMappingCallback(
 		const std::shared_ptr<std_srvs::srv::Empty::Request>,
 		std::shared_ptr<std_srvs::srv::Empty::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(this->get_logger(), "rtabmap: Set mapping mode");
 	rtabmap::ParametersMap parameters;
 	parameters.insert(rtabmap::ParametersPair(rtabmap::Parameters::kMemIncrementalMemory(), "true"));
@@ -4098,6 +4160,7 @@ void CoreWrapper::getNodeDataCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::GetNodeData::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::GetNodeData::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(get_logger(), "rtabmap: Getting node data (%d node(s), images=%s scan=%s grid=%s user_data=%s)...",
 			(int)req->ids.size(),
 			req->images?"true":"false",
@@ -4128,6 +4191,7 @@ void CoreWrapper::getMapDataCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::GetMap::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::GetMap::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(this->get_logger(), "rtabmap: Getting map (global=%s optimized=%s graphOnly=%s)...",
 			req->global_map?"true":"false",
 			req->optimized?"true":"false",
@@ -4171,6 +4235,7 @@ void CoreWrapper::getMapData2Callback(
 		const std::shared_ptr<rtabmap_msgs::srv::GetMap2::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::GetMap2::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(get_logger(), "rtabmap: Getting map (global=%s optimized=%s with_images=%s with_scans=%s with_user_data=%s with_grids=%s)...",
 			req->global_map?"true":"false",
 			req->optimized?"true":"false",
@@ -4215,6 +4280,7 @@ void CoreWrapper::getMapCallback(
 		const std::shared_ptr<nav_msgs::srv::GetMap::Request>,
 		std::shared_ptr<nav_msgs::srv::GetMap::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	// Make sure grid map cache is up to date (in case there is no subscriber on map topics)
 	std::map<int, Transform> poses = rtabmap_.getLocalOptimizedPoses();
 	mapsManager_.updateMapCaches(poses, rtabmap_.getMemory(), true, false);
@@ -4257,6 +4323,7 @@ void CoreWrapper::getProbMapCallback(
 		const std::shared_ptr<nav_msgs::srv::GetMap::Request>,
 		std::shared_ptr<nav_msgs::srv::GetMap::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	// Make sure grid map cache is up to date (in case there is no subscriber on map topics)
 	std::map<int, Transform> poses = rtabmap_.getLocalOptimizedPoses();
 	mapsManager_.updateMapCaches(poses, rtabmap_.getMemory(), true, false);
@@ -4299,6 +4366,7 @@ void CoreWrapper::publishMapCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::PublishMap::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::PublishMap::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(this->get_logger(), "rtabmap: Publishing map...");
 
 	rclcpp::Time stampNow = now();
@@ -4551,6 +4619,7 @@ void CoreWrapper::getPlanCallback(
 		const std::shared_ptr<nav_msgs::srv::GetPlan::Request> req,
 		std::shared_ptr<nav_msgs::srv::GetPlan::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	Transform pose = rtabmap_conversions::transformFromPoseMsg(req->goal.pose, true);
 	UTimer timer;
 	if(!pose.isNull())
@@ -4627,6 +4696,7 @@ void CoreWrapper::getPlanNodesCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::GetPlan::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::GetPlan::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	Transform pose;
 	if(req->goal_node <= 0)
 	{
@@ -4725,6 +4795,7 @@ void CoreWrapper::setGoalCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::SetGoal::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::SetGoal::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	double planningTime = 0.0;
 	goalCommonCallback(req->node_id, req->node_label, req->frame_id, Transform(), now(), &planningTime);
 	const std::vector<std::pair<int, Transform> > & path = rtabmap_.getPath();
@@ -4743,6 +4814,7 @@ void CoreWrapper::cancelGoalCallback(
 		const std::shared_ptr<std_srvs::srv::Empty::Request>,
 		std::shared_ptr<std_srvs::srv::Empty::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	if(rtabmap_.getPath().size())
 	{
 		RCLCPP_WARN(this->get_logger(), "Goal cancelled!");
@@ -4771,6 +4843,7 @@ void CoreWrapper::setLabelCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::SetLabel::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::SetLabel::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	if(rtabmap_.labelLocation(req->node_id, req->node_label))
 	{
 		if(req->node_id > 0)
@@ -4800,6 +4873,7 @@ void CoreWrapper::listLabelsCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::ListLabels::Request>,
 		std::shared_ptr<rtabmap_msgs::srv::ListLabels::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	if(rtabmap_.getMemory())
 	{
 		std::map<int, std::string> labels = rtabmap_.getMemory()->getAllLabels();
@@ -4814,6 +4888,7 @@ void CoreWrapper::removeLabelCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::RemoveLabel::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::RemoveLabel::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	if(rtabmap_.getMemory())
 	{
 		int id = rtabmap_.getMemory()->getSignatureIdByLabel(req->label, true);
@@ -4836,6 +4911,7 @@ void CoreWrapper::addLinkCallback(const std::shared_ptr<rmw_request_id_t>,
 		const std::shared_ptr<rtabmap_msgs::srv::AddLink::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::AddLink::Response>)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	if(rtabmap_.getMemory())
 	{
 		RCLCPP_INFO(get_logger(), "Adding external link %d -> %d", req->link.from_id, req->link.to_id);
@@ -4848,6 +4924,7 @@ void CoreWrapper::getNodesInRadiusCallback(
 		const std::shared_ptr<rtabmap_msgs::srv::GetNodesInRadius::Request> req,
 		std::shared_ptr<rtabmap_msgs::srv::GetNodesInRadius::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(get_logger(), "Get nodes in radius (%f): node_id=%d pose=(%f,%f,%f)", req->radius, req->node_id, req->x, req->y, req->z);
 	std::map<int, Transform> poses;
 	std::map<int, float> dists;
@@ -5205,10 +5282,14 @@ void CoreWrapper::goalResponseCallback(
 #ifdef NAV_MSGS_FOXY
 		std::shared_future<GoalHandleNav2::SharedPtr> future)
 {
+	// HERoEHS lifelong: 여기선 syncDataMutex_ 를 잡지 않는다 — rclcpp_action 은 내부 요청 뮤텍스를 쥔 채 액션 콜백을 부르고,
+	// processAsync 는 syncDataMutex_ 를 쥔 채 async_send_goal 로 그 뮤텍스를 잡는다(교착). use_action_for_goal 일 때만 쓰이는 upstream 경로.
         auto goal_handle = future.get();
 #else
         const GoalHandleNav2::SharedPtr & goal_handle)
 {
+	// HERoEHS lifelong: 여기선 syncDataMutex_ 를 잡지 않는다 — rclcpp_action 은 내부 요청 뮤텍스를 쥔 채 액션 콜백을 부르고,
+	// processAsync 는 syncDataMutex_ 를 쥔 채 async_send_goal 로 그 뮤텍스를 잡는다(교착). use_action_for_goal 일 때만 쓰이는 upstream 경로.
 #endif
 	if (!goal_handle) {
 		RCLCPP_ERROR(this->get_logger(), "Goal was rejected by server");
@@ -5226,6 +5307,8 @@ void CoreWrapper::goalResponseCallback(
 void CoreWrapper::resultCallback(
 		const GoalHandleNav2::WrappedResult & result)
 {
+	// HERoEHS lifelong: 여기선 syncDataMutex_ 를 잡지 않는다 — rclcpp_action 은 내부 요청 뮤텍스를 쥔 채 액션 콜백을 부르고,
+	// processAsync 는 syncDataMutex_ 를 쥔 채 async_send_goal 로 그 뮤텍스를 잡는다(교착). use_action_for_goal 일 때만 쓰이는 upstream 경로.
 	bool ignore = false;
 	if(!currentMetricGoal_.isNull())
 	{
@@ -5424,6 +5507,7 @@ void CoreWrapper::octomapBinaryCallback(
 		const std::shared_ptr<octomap_msgs::srv::GetOctomap::Request>,
 		std::shared_ptr<octomap_msgs::srv::GetOctomap::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(this->get_logger(), "Sending binary map data on service request");
 	res->map.header.frame_id = mapFrameId_;
 	res->map.header.stamp = now();
@@ -5448,6 +5532,7 @@ void CoreWrapper::octomapFullCallback(
 		const std::shared_ptr<octomap_msgs::srv::GetOctomap::Request>,
 		std::shared_ptr<octomap_msgs::srv::GetOctomap::Response> res)
 {
+	UScopeMutex lock(syncDataMutex_); // HERoEHS lifelong: 유지보수 콜백 그룹과 직렬화 (maintenanceCallbackGroup_ 주석)
 	RCLCPP_INFO(this->get_logger(), "Sending full map data on service request");
 	res->map.header.frame_id = mapFrameId_;
 	res->map.header.stamp = now();

@@ -1,0 +1,7 @@
+# HERoEHS lifelong: 삽입 노드 격리 설정/해제. 격리(Node.weight -2) 노드는 전역 LC·근접 후보에서 빠지고
+# 그래프 최적화에는 보통 노드로 참여한다. 삽입 노드는 격리로 태어나 보호관찰 통과 시 quarantined=false 로
+# 풀린다. DB 에 바로 기록돼 재기동·비정상 종료 뒤에도 유지.
+int32[] node_ids
+bool quarantined
+---
+int32 applied     # 존재해서 적용된 노드 수

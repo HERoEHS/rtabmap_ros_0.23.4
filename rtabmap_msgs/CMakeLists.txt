@@ -82,6 +82,8 @@ set(srv_files
    "srv/RemoveFeaturesInBox.srv"
    "srv/RemoveFeatures.srv"
    "srv/IngestCurrentFrame.srv"
+   "srv/SetNodesQuarantine.srv"
+   "srv/DeleteNodes.srv"
 )
 
 ## Generate messages and services
