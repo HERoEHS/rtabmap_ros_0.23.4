@@ -1,0 +1,6 @@
+# HERoEHS lifelong: 노드 영구 삭제 — 보호관찰 불합격·미판정 삽입 노드 퇴출. 메모리·이웃 링크·DB 행
+# (Node·Data·Feature·Link 양방향·GlobalDescriptor·Statistics·Feature_archive) 전부, 한 트랜잭션.
+# STM(지금 처리 중인) 노드는 거부. 되돌릴 수 없다.
+int32[] node_ids
+---
+int32[] deleted   # 실제로 지운 id
