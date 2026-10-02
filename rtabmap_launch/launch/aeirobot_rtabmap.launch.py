@@ -322,7 +322,9 @@ def generate_launch_description():
                               description='loop closure 감지율 [Hz]. 빈 값(기본)=yaml 의 Rtabmap/DetectionRate. '
                                           'GPU 경합 시(라이프롱 스택 노트북 구동) 1 권장'),
         DeclareLaunchArgument('memory_thr', default_value='0',
-                              description='Rtabmap/MemoryThr — WM 노드 수 상한(0=무제한). 장시간 localization 운영 시 350 권장 (setup 3.29)'),
+                              description='Rtabmap/MemoryThr — WM 노드 수 상한(0=무제한). localization 에서 상한을 두면 LTM 퇴출·재소환이 '
+                                          '전체 재최적화를 불러 맵이 움직인다(alice_navigation lifelong README) — 0 유지. '
+                                          '3.29 의 350 권장은 철회(2026-10-02)'),
         DeclareLaunchArgument('rtabmap_threads', default_value='0',
                               description='rtabmap의 OpenCV/PCL/BLAS 스레드 풀 상한. '
                                           '0=제한 없음(코어 수만큼 = 상류 기본). CPU 예산이 있는 '
