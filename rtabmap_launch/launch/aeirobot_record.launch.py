@@ -52,7 +52,7 @@ def _setup(context, *_):
     if p['driver']:
         acts.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
-                get_package_share_directory('rtabmap_launch'), 'launch', 'gemini_camera.launch.py')),
+                get_package_share_directory('aeirobot_orbbec_camera'), 'launch', 'gemini_camera.launch.py')),
             launch_arguments={'use_imu': 'true' if use_imu else 'false'}.items()))
     if vo:
         print('[aeirobot_record] VO 모드: rgbd_odometry 가 odom→base TF 를 발행 — EKF 와 동시 기동 금지.')
