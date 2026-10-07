@@ -6,7 +6,7 @@
 # (구 rtabmap_with_gui 구조에서 출발 — 그 런치는 2026-09-09 삭제됨.)
 #   1. 스테레오 입력 → RGB-D 입력 (subscribe_depth)
 #   2. 외부 odom(/odometry/filtered) → rtabmap_odom rgbd_odometry (VO) 노드 추가
-#   3. 카메라 드라이버(gemini_330_series.launch.py)를 depth_registration:=true 로 포함 실행
+#   3. 카메라 드라이버(aeirobot_orbbec_camera gemini_camera → gemini_330_series)를 포함 실행
 #   4. localization argument로 매핑/위치추정 모드 선택 (GUI 서비스 전환 대신 런치 인자)
 #   5. force_3dof argument: 로봇 탑재 시 true, 손으로 들고 테스트 시 false
 #   6. camera argument: orbbec | zed — 카메라 종류는 sim/실물과 **별개**의 축이다.
@@ -66,7 +66,7 @@ from ament_index_python.packages import get_package_share_directory
 
 # ── 카메라 프리셋 (camera:=orbbec|zed) — sim/실물 축과도, odom 소스 축과도 독립 ──
 # 프리셋이 정하는 건 **토픽 3종 + 드라이버를 여기서 띄우는지** 뿐이다.
-#   orbbec: 실물 Gemini, /camera/* — 드라이버(gemini_330_series)를 이 launch 가 띄운다
+#   orbbec: 실물 Gemini, /camera/* — 드라이버(aeirobot_orbbec_camera gemini_camera)를 이 launch 가 띄운다
 #   zed:    실물 zed2i / Isaac ZED, /aeirobot/vslam_* — 드라이버는 외부(aeirobot_zed_camera / Isaac)
 # odom 소스는 카메라와 무관하게 **기본 외부 EKF(/odometry/filtered)** 다. 로봇에 달린 카메라는
 # 둘 다 EKF 를 쓴다 — orbbec 이 VO 를 썼던 건 로봇 미탑재 손테스트 시절 잔재. VO 가 필요하면
@@ -192,7 +192,7 @@ def launch_setup(context, *args, **kwargs):
         ('imu', LaunchConfiguration('imu_topic')),
     ]
 
-    # 카메라 여러 대: rgbdx_sync 출력(RGBDImages)을 받는다 — 예: alice_m2/m2_camera.launch.py. 빈 값이면 종전 그대로.
+    # 카메라 여러 대: rgbdx_sync 출력(RGBDImages)을 받는다 — 예: aeirobot_orbbec_camera m2_camera.launch.py. 빈 값이면 종전 그대로.
     # rtabmap rgbd_cameras:=N 경로는 이 빌드에서 안 된다(rtabmap_sync RTABMAP_SYNC_MULTI_RGBD=OFF) — rgbd_cameras=0 + rgbd_images.
     # 멀티카메라 PnP 는 OpenGV 가 있어야 하는데 설치된 core 에 없다 → Vis/EstimationType 0(3D-3D).
     # SuperGlue 는 카메라 1대일 때만 쓰인다 → Vis/CorNNType 5(BF cross-check), 모델을 로드하지 않는다.
@@ -426,12 +426,12 @@ def generate_launch_description():
 
 
 def _orbbec_camera_include():
-    """Gemini 드라이버 — 인자 한 벌은 gemini_camera.launch.py (매니저 camera 프로세스와 공유).
+    """Gemini 드라이버 — 인자 한 벌·장착 TF 는 aeirobot_orbbec_camera gemini_camera (매니저 camera 프로세스와 공유).
     launch_camera 는 프리셋이 채운다(orbbec=true, zed=false). 매니저 아래선 false 로 넘어온다."""
     return [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
-                get_package_share_directory('rtabmap_launch'), 'launch', 'gemini_camera.launch.py')),
+                get_package_share_directory('aeirobot_orbbec_camera'), 'launch', 'gemini_camera.launch.py')),
             launch_arguments={'use_imu': LaunchConfiguration('use_imu')}.items(),
             condition=IfCondition(LaunchConfiguration('launch_camera')),
         ),

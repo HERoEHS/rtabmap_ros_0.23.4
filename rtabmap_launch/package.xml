@@ -21,6 +21,8 @@
   <exec_depend>rtabmap_util</exec_depend>
   <exec_depend>rtabmap_viz</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+  <!-- camera:=orbbec 드라이버(gemini_camera)·M2 카메라 세트(m2_camera, m2_config)를 이 패키지 share 에서 찾는다 -->
+  <exec_depend>aeirobot_orbbec_camera</exec_depend>
   
   <export>
     <build_type>ament_cmake</build_type>
