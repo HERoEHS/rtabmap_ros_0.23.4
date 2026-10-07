@@ -85,6 +85,13 @@ _CAM_PRESETS = {
         'camera_info_topic': '/aeirobot/vslam_left_camera_info',
         'launch_camera': 'false',
     },
+    # ALICE M2 카메라 세트 — 토픽·드라이버는 alice_m2/m2_rtabmap.launch.py 가 m2_cameras.yaml 에서 채워 넘긴다
+    'orbbec_m2': {
+        'rgb_topic': '',
+        'depth_topic': '',
+        'camera_info_topic': '',
+        'launch_camera': 'false',
+    },
 }
 _CAMERA_DEFAULT = os.environ.get('AEIROBOT_CAMERA', 'zed')
 
@@ -185,6 +192,18 @@ def launch_setup(context, *args, **kwargs):
         ('imu', LaunchConfiguration('imu_topic')),
     ]
 
+    # 카메라 여러 대: rgbdx_sync 출력(RGBDImages)을 받는다 — 예: alice_m2/m2_camera.launch.py. 빈 값이면 종전 그대로.
+    # rtabmap rgbd_cameras:=N 경로는 이 빌드에서 안 된다(rtabmap_sync RTABMAP_SYNC_MULTI_RGBD=OFF) — rgbd_cameras=0 + rgbd_images.
+    # 멀티카메라 PnP 는 OpenGV 가 있어야 하는데 설치된 core 에 없다 → Vis/EstimationType 0(3D-3D).
+    # SuperGlue 는 카메라 1대일 때만 쓰인다 → Vis/CorNNType 5(BF cross-check), 모델을 로드하지 않는다.
+    # 카메라끼리 스탬프가 어긋나므로 odom_sensor_sync 로 각 카메라 자세를 odom 시점에 맞춘다.
+    rgbd_images = LaunchConfiguration('rgbd_images_topic').perform(context)
+    rgbdx = ({'subscribe_depth': False, 'subscribe_rgbd': True, 'rgbd_cameras': 0, 'subscribe_odom_info': False}
+             if rgbd_images else {})
+    rgbdx_slam = ({**rgbdx, 'odom_sensor_sync': True, 'Vis/EstimationType': '0', 'Vis/CorNNType': '5'}
+                  if rgbd_images else {})
+    rgbdx_remap = [('rgbd_images', rgbd_images)] if rgbd_images else []
+
     return [
         SetParameter(name='use_sim_time', value=LaunchConfiguration('use_sim_time')),
 
@@ -250,11 +269,11 @@ def launch_setup(context, *args, **kwargs):
                 # 모델 경로는 워크스페이스 위치(ROS_WS)에 묶여 있어 launch 가 계산한다
                 'SuperPoint/ModelPath': os.path.join(FEATURE_EXTRACTORS, 'superpoint_v1.pt'),
                 'PyMatcher/Path': os.path.join(FEATURE_EXTRACTORS, 'SuperGluePretrainedNetwork', 'rtabmap_superglue.py'),
-            }, **detection_override}],
+            }, **detection_override, **rgbdx_slam}],
             # odom_topic 기본 'odom'(상대) = 종전 그대로 VO(/rtabmap/odom) 소비.
             # 외부 odom(EKF 등) 쓸 땐 launch_odometry:=false odom_topic:=/odometry/filtered
             remappings=remappings + [('map', LaunchConfiguration('map_topic')),
-                                     ('odom', LaunchConfiguration('odom_topic'))],
+                                     ('odom', LaunchConfiguration('odom_topic'))] + rgbdx_remap,
             # 매핑 모드는 -d(기존 DB 삭제 후 새로 시작), localization 모드는 DB 유지·로드
             arguments=[
                 LaunchConfiguration('rtabmap_args'),
@@ -283,10 +302,10 @@ def launch_setup(context, *args, **kwargs):
         ### Rtabmap GUI ###
         Node(
             package='rtabmap_viz', executable='rtabmap_viz', name='rtabmap_viz', output='screen',
-            parameters=[common_params],
+            parameters=[common_params] + ([rgbdx] if rgbdx else []),
             # odom remap 은 rtabmap 노드와 동일하게 — 외부 odom(EKF) 구성에서
             # 기본 /rtabmap/odom 만 기다리면 동기화가 영영 안 찬다 (5초 경고 반복)
-            remappings=remappings + [('odom', LaunchConfiguration('odom_topic'))],
+            remappings=remappings + [('odom', LaunchConfiguration('odom_topic'))] + rgbdx_remap,
             condition=IfCondition(LaunchConfiguration('rtabmap_viz')),
             arguments=[LaunchConfiguration('gui_cfg')],
             prefix=LaunchConfiguration('launch_prefix'),
@@ -382,6 +401,9 @@ def generate_launch_description():
         DeclareLaunchArgument('rgb_topic',         default_value='', description='빈 값 = camera 프리셋'),
         DeclareLaunchArgument('depth_topic',       default_value='', description='빈 값 = camera 프리셋'),
         DeclareLaunchArgument('camera_info_topic', default_value='', description='빈 값 = camera 프리셋'),
+        DeclareLaunchArgument('rgbd_images_topic', default_value='',
+                              description='카메라 여러 대의 rgbdx_sync 출력(RGBDImages). 빈 값 = rgb/depth 1대 (종전). '
+                                          'M2 는 alice_m2/m2_rtabmap.launch.py 가 채운다'),
 
         # imu (use_imu:=true → 카메라 내장 IMU 활성화 + madgwick 필터로 orientation 추정 → VO 중력 정렬)
         DeclareLaunchArgument('use_imu',          default_value='',             description='카메라 내장 IMU를 VO 중력 정렬에 사용 (imu_filter_madgwick 패키지 필요). 빈 값 = orbbec+VO 일 때만 true'),
