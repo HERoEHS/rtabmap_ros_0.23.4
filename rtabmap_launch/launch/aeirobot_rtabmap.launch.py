@@ -85,7 +85,7 @@ _CAM_PRESETS = {
         'camera_info_topic': '/aeirobot/vslam_left_camera_info',
         'launch_camera': 'false',
     },
-    # ALICE M2 카메라 세트 — 토픽·드라이버는 alice_m2/m2_rtabmap.launch.py 가 m2_cameras.yaml 에서 채워 넘긴다
+    # ALICE M2 카메라 세트 — 토픽·드라이버는 alice_m2/m2_rtabmap.launch.py 가 M2 카메라 yaml(config/alice_m2/cameras.yaml)에서 채워 넘긴다
     'orbbec_m2': {
         'rgb_topic': '',
         'depth_topic': '',
@@ -121,7 +121,7 @@ def _apply_camera_preset(context, *_):
 
 
 def _load_tuning(path):
-    """config/rtabmap_params.yaml → {노드이름: {'Xxx/Yyy': '문자열'}}.
+    """config/<세대>/rtabmap_params.yaml → {노드이름: {'Xxx/Yyy': '문자열'}}.
 
     rtabmap 코어 파라미터는 전부 string 선언이라 yaml 타입추론(0.11→double, false→bool)이
     그대로 노드에 닿으면 declare 시 타입 충돌로 죽는다. 여기서 문자열로 정규화해 그 함정을
@@ -219,7 +219,7 @@ def launch_setup(context, *args, **kwargs):
         Node(
             condition=IfCondition(LaunchConfiguration('launch_odometry')),
             package='rtabmap_odom', executable='rgbd_odometry', name='rgbd_odometry', output='screen',
-            # 튠 값(Odom/ResetCountdown 등)은 config/rtabmap_params.yaml rgbd_odometry: 절.
+            # 튠 값(Odom/ResetCountdown 등)은 config/<세대>/rtabmap_params.yaml rgbd_odometry: 절.
             parameters=[{**common_params, **tuning.get('rgbd_odometry', {}), **{
                 'wait_imu_to_init': wait_imu,
                 'Reg/Force3DoF': ParameterValue(force_3dof, value_type=str),
@@ -237,7 +237,7 @@ def launch_setup(context, *args, **kwargs):
             package='rtabmap_slam', executable='rtabmap', name='rtabmap', output='screen',
             # GB급 DB의 사전 저장이 끝나기 전에 launch가 종료 신호를 올리지 않는다.
             sigterm_timeout='60', sigkill_timeout='10',
-            # 튠 값(Grid/Vis/Kp/SuperPoint/Optimizer/LC 임계 …)은 config/rtabmap_params.yaml rtabmap: 절.
+            # 튠 값(Grid/Vis/Kp/SuperPoint/Optimizer/LC 임계 …)은 config/<세대>/rtabmap_params.yaml rtabmap: 절.
             # 여기 남은 것은 launch 인자·환경으로 계산되는 값만 — yaml 보다 뒤라 yaml 을 덮는다.
             parameters=[{**common_params, **tuning.get('rtabmap', {}), **{
                 'map_frame_id': LaunchConfiguration('map_frame_id'),
@@ -326,6 +326,8 @@ def generate_launch_description():
     config_rviz = os.path.join(
         get_package_share_directory('rtabmap_launch'), 'launch', 'config', 'rgbd.rviz'
     )
+    # 튠 yaml 세대 폴더 — ALICE_GENERATION=alice_m2 면 config/alice_m2/, 그 외(빈 값 포함) config/alice_m1/ (파일 이름은 같다)
+    gen = 'alice_m2' if os.environ.get('ALICE_GENERATION', '').strip() == 'alice_m2' else 'alice_m1'
 
     return LaunchDescription([
 
@@ -335,7 +337,7 @@ def generate_launch_description():
         DeclareLaunchArgument('force_3dof', default_value='true', description='true: 평면(3DoF) 강제 — 로봇 탑재 시 사용. 손으로 들고 테스트할 땐 false'),
         DeclareLaunchArgument('rtabmap_params',
                               default_value=os.path.join(get_package_share_directory('rtabmap_launch'),
-                                                         'config', 'rtabmap_params.yaml'),
+                                                         'config', gen, 'rtabmap_params.yaml'),
                               description='rtabmap/rgbd_odometry 코어 파라미터 튠 yaml (노드별 평면 맵, 값은 문자열로 정규화)'),
         DeclareLaunchArgument('detection_rate', default_value='',
                               description='loop closure 감지율 [Hz]. 빈 값(기본)=yaml 의 Rtabmap/DetectionRate. '
