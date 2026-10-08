@@ -1,5 +1,5 @@
 #
-# ALICE M2 RTAB-Map (매니저 lifelong_mapping_m2, 벤치 단독 실행) — m2_cameras.yaml 로 aeirobot_rtabmap 을 띄운다.
+# ALICE M2 RTAB-Map (매니저 lifelong_mapping_m2, 벤치 단독 실행) — M2 카메라 yaml(aeirobot_orbbec_camera config/alice_m2/cameras.yaml)로 aeirobot_rtabmap 을 띄운다.
 #
 #   카메라 2대 이상: aeirobot_rtabmap 이 카메라 묶음(rgbd_images_topic)을 받는다 (3D-3D 등록 — aeirobot_rtabmap 주석)
 #   주 카메라 cameras[0]: VO 입력 (odom_topic '' 일 때), multi_camera:=false 면 rtabmap 도 이 한 대만 (A/B)
@@ -44,7 +44,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('m2_config', default_value=m2_config.default_path(),
                               description='M2 카메라 설정 yaml (기본 = env AEIROBOT_M2_CAMERAS, 없으면 '
-                                          'aeirobot_orbbec_camera config/m2_cameras.yaml)'),
+                                          'aeirobot_orbbec_camera config/alice_m2/cameras.yaml)'),
         DeclareLaunchArgument('launch_camera', default_value='true',
                               description='m2_camera(드라이버·장착 TF·묶음)도 같이. 매니저는 camera_m2 가 따로라 false'),
         DeclareLaunchArgument('multi_camera', default_value='true',
