@@ -36,7 +36,8 @@ def _setup(context, *_):
             launch_arguments={'m2_config': path}.items()))
     acts.append(IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(os.path.dirname(_HERE), 'aeirobot_rtabmap.launch.py')),
-        launch_arguments=m2_config.rtabmap_args(cfg, multi).items()))
+        launch_arguments=m2_config.rtabmap_args(
+            cfg, multi, LaunchConfiguration('odom_topic').perform(context)).items()))
     return acts
 
 
@@ -49,5 +50,8 @@ def generate_launch_description():
                               description='m2_camera(드라이버·장착 TF·묶음)도 같이. 매니저는 camera_m2 가 따로라 false'),
         DeclareLaunchArgument('multi_camera', default_value='true',
                               description='false = cameras[0] 한 대만 rtabmap 에 (A/B 비교). 드라이버는 그대로'),
+        DeclareLaunchArgument('odom_topic', default_value='',
+                              description='odom 입력 — 비면 카메라 yaml 의 odom_topic (\'\' = 주 카메라 VO). 토픽을 주면 '
+                                          'VO 를 끄고 그 odom (매니저 M2 프로파일: /odometry/filtered = odom_m2)'),
         OpaqueFunction(function=_setup),
     ])
