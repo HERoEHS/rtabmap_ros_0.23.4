@@ -169,6 +169,15 @@ def launch_setup(context, *args, **kwargs):
     # rtabmap 은 odom 메시지의 twist.covariance 를 링크 공분산으로 쓰는데(CoreWrapper), robot_localization EKF 는
     # 그 칸에 속도 공분산(자이로 잡음 ~1e-6)을 넣어 방향을 수백 배 과신 → 맞는 루프 클로저를 버린다.
     # 쓰는 곳: M2 외부 odom (m2_config.rtabmap_args). 시뮬 A/B 2026-10-16: 궤적 RMSE 0.12~0.14 → 0.027 m.
+    # 라이다 점군 입력 (scan_cloud) — 비면 지금과 같다 (카메라만). 쓰는 곳: M2 (m2_scan_merge 의 2D 라이다 2대 + dToF 2대
+    # base_footprint 점군, m2_config.rtabmap_args). 격자(Grid/Sensor)·복셀 등 코어 값은 세대 튠 yaml 이 정한다.
+    scan_cloud_topic = LaunchConfiguration('scan_cloud_topic').perform(context).strip()
+    scan_params = ({'subscribe_scan_cloud': True,
+                    'scan_cloud_is_2d': LaunchConfiguration('scan_cloud_is_2d').perform(context).lower() in ('true', '1'),
+                    'qos_scan': ParameterValue(LaunchConfiguration('qos'), value_type=int)}
+                   if scan_cloud_topic else {})
+    scan_remap = [('scan_cloud', scan_cloud_topic)] if scan_cloud_topic else []
+
     odom_tf = {}
     odom_frame_id = LaunchConfiguration('odom_frame_id').perform(context).strip()
     if odom_frame_id:
@@ -282,11 +291,11 @@ def launch_setup(context, *args, **kwargs):
                 # 모델 경로는 워크스페이스 위치(ROS_WS)에 묶여 있어 launch 가 계산한다
                 'SuperPoint/ModelPath': os.path.join(FEATURE_EXTRACTORS, 'superpoint_v1.pt'),
                 'PyMatcher/Path': os.path.join(FEATURE_EXTRACTORS, 'SuperGluePretrainedNetwork', 'rtabmap_superglue.py'),
-            }, **detection_override, **rgbdx_slam, **odom_tf}],
+            }, **detection_override, **rgbdx_slam, **odom_tf, **scan_params}],
             # odom_topic 기본 'odom'(상대) = 종전 그대로 VO(/rtabmap/odom) 소비.
             # 외부 odom(EKF 등) 쓸 땐 launch_odometry:=false odom_topic:=/odometry/filtered
             remappings=remappings + [('map', LaunchConfiguration('map_topic')),
-                                     ('odom', LaunchConfiguration('odom_topic'))] + rgbdx_remap,
+                                     ('odom', LaunchConfiguration('odom_topic'))] + rgbdx_remap + scan_remap,
             # 매핑 모드는 -d(기존 DB 삭제 후 새로 시작), localization 모드는 DB 유지·로드
             arguments=[
                 LaunchConfiguration('rtabmap_args'),
@@ -411,6 +420,10 @@ def generate_launch_description():
         DeclareLaunchArgument('odom_topic', default_value='',
                               description='rtabmap odom 입력. 기본은 VO(rgbd_odometry) 출력. '
                                           '외부 odom(robot_localization EKF)이면 launch_odometry:=false 와 함께 지정'),
+        DeclareLaunchArgument('scan_cloud_topic', default_value='',
+                              description='라이다 점군 입력(scan_cloud). 비우면 카메라만(종전). M2 = /m2/scan_cloud (m2_scan_merge)'),
+        DeclareLaunchArgument('scan_cloud_is_2d', default_value='false',
+                              description='scan_cloud 를 2D 스캔(x·y)으로 볼지. M2 는 dToF 가 섞인 3D 라 false'),
         DeclareLaunchArgument('odom_frame_id', default_value='',
                               description='비우면 odom 토픽(종전). 프레임을 주면 rtabmap 이 odom 을 TF 로 읽고(토픽 구독 안 함) '
                                           '링크 분산은 아래 두 값 — EKF 의 twist 공분산(자이로 잡음)을 링크 공분산으로 쓰지 않게'),
