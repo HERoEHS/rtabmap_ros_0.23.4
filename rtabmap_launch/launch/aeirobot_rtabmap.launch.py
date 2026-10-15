@@ -165,6 +165,19 @@ def launch_setup(context, *args, **kwargs):
     detection_rate = LaunchConfiguration('detection_rate').perform(context)
     detection_override = {'Rtabmap/DetectionRate': detection_rate} if detection_rate else {}
 
+    # 오돔을 TF 로 읽고 노드 간 링크 분산을 직접 준다 (odom_frame_id 가 비면 지금과 같다 = 토픽 odom).
+    # rtabmap 은 odom 메시지의 twist.covariance 를 링크 공분산으로 쓰는데(CoreWrapper), robot_localization EKF 는
+    # 그 칸에 속도 공분산(자이로 잡음 ~1e-6)을 넣어 방향을 수백 배 과신 → 맞는 루프 클로저를 버린다.
+    # 쓰는 곳: M2 외부 odom (m2_config.rtabmap_args). 시뮬 A/B 2026-10-16: 궤적 RMSE 0.12~0.14 → 0.027 m.
+    odom_tf = {}
+    odom_frame_id = LaunchConfiguration('odom_frame_id').perform(context).strip()
+    if odom_frame_id:
+        odom_tf['odom_frame_id'] = odom_frame_id
+        for k in ('odom_tf_linear_variance', 'odom_tf_angular_variance'):
+            v = LaunchConfiguration(k).perform(context).strip()
+            if v:
+                odom_tf[k] = float(v)
+
     # 카메라가 sensor_data(Best Effort) QoS로 발행하므로 맞춰줌
     # rgbd_odometry는 이미지 QoS를 'qos'로, rtabmap/viz는 'qos_image'로 받음
     common_params = {
@@ -269,7 +282,7 @@ def launch_setup(context, *args, **kwargs):
                 # 모델 경로는 워크스페이스 위치(ROS_WS)에 묶여 있어 launch 가 계산한다
                 'SuperPoint/ModelPath': os.path.join(FEATURE_EXTRACTORS, 'superpoint_v1.pt'),
                 'PyMatcher/Path': os.path.join(FEATURE_EXTRACTORS, 'SuperGluePretrainedNetwork', 'rtabmap_superglue.py'),
-            }, **detection_override, **rgbdx_slam}],
+            }, **detection_override, **rgbdx_slam, **odom_tf}],
             # odom_topic 기본 'odom'(상대) = 종전 그대로 VO(/rtabmap/odom) 소비.
             # 외부 odom(EKF 등) 쓸 땐 launch_odometry:=false odom_topic:=/odometry/filtered
             remappings=remappings + [('map', LaunchConfiguration('map_topic')),
@@ -398,6 +411,13 @@ def generate_launch_description():
         DeclareLaunchArgument('odom_topic', default_value='',
                               description='rtabmap odom 입력. 기본은 VO(rgbd_odometry) 출력. '
                                           '외부 odom(robot_localization EKF)이면 launch_odometry:=false 와 함께 지정'),
+        DeclareLaunchArgument('odom_frame_id', default_value='',
+                              description='비우면 odom 토픽(종전). 프레임을 주면 rtabmap 이 odom 을 TF 로 읽고(토픽 구독 안 함) '
+                                          '링크 분산은 아래 두 값 — EKF 의 twist 공분산(자이로 잡음)을 링크 공분산으로 쓰지 않게'),
+        DeclareLaunchArgument('odom_tf_linear_variance', default_value='',
+                              description='odom_frame_id 를 줄 때 노드 간 링크 위치 분산 [m²]. 비면 rtabmap 기본(0.001)'),
+        DeclareLaunchArgument('odom_tf_angular_variance', default_value='',
+                              description='odom_frame_id 를 줄 때 노드 간 링크 방향 분산 [rad²]. 비면 rtabmap 기본(0.001)'),
 
         # RGB-D 토픽 — 빈 값(기본)이면 camera 프리셋 (orbbec: /camera/*, zed: /aeirobot/vslam_*)
         DeclareLaunchArgument('rgb_topic',         default_value='', description='빈 값 = camera 프리셋'),
