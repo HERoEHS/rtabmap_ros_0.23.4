@@ -62,8 +62,9 @@ def generate_launch_description():
         DeclareLaunchArgument('lidar_scan', default_value='true',
                               description='외부 odom 이면 2D 라이다 2대 + dToF 2대 점군도 rtabmap 에 (m2_scan_merge). '
                                           'false = 카메라만 (종전). 카메라 VO(벤치)면 이 값과 상관없이 끈다'),
-        DeclareLaunchArgument('lidar_beam_time', default_value='ydlidar', choices=['ydlidar', 'index'],
+        DeclareLaunchArgument('lidar_beam_time', default_value='ydlidar', choices=['ydlidar', 'isaac', 'index'],
                               description='2D 라이다 빔 시각 규약 — ydlidar = 실물 드라이버(0° 에서 시작해 각도 증가), '
-                                          'index = ROS 규약(배열 순서, 시뮬 scan_crop). m2_config LIDAR_BEAM_TIMES 주석'),
+                                          'isaac = Isaac 평면 스캔(+10° 에서 시작해 각도 감소, 시뮬 프로파일), '
+                                          'index = ROS 규약(배열 순서). m2_config LIDAR_BEAM_TIMES 주석'),
         OpaqueFunction(function=_setup),
     ])
