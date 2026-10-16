@@ -40,7 +40,8 @@ def _setup(context, *_):
     acts.append(IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(os.path.dirname(_HERE), 'aeirobot_rtabmap.launch.py')),
         launch_arguments=args.items()))
-    merge = m2_config.scan_merge_launch(args, context.launch_configurations.get('use_sim_time', 'false'))
+    merge = m2_config.scan_merge_launch(args, context.launch_configurations.get('use_sim_time', 'false'),
+                                        LaunchConfiguration('lidar_beam_time').perform(context))
     if merge:
         acts.append(merge)          # 라이다 점군 (외부 odom 일 때 — m2_config 주석)
     return acts
@@ -61,5 +62,8 @@ def generate_launch_description():
         DeclareLaunchArgument('lidar_scan', default_value='true',
                               description='외부 odom 이면 2D 라이다 2대 + dToF 2대 점군도 rtabmap 에 (m2_scan_merge). '
                                           'false = 카메라만 (종전). 카메라 VO(벤치)면 이 값과 상관없이 끈다'),
+        DeclareLaunchArgument('lidar_beam_time', default_value='ydlidar', choices=['ydlidar', 'index'],
+                              description='2D 라이다 빔 시각 규약 — ydlidar = 실물 드라이버(0° 에서 시작해 각도 증가), '
+                                          'index = ROS 규약(배열 순서, 시뮬 scan_crop). m2_config LIDAR_BEAM_TIMES 주석'),
         OpaqueFunction(function=_setup),
     ])
