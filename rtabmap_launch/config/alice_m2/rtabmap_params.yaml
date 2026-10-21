@@ -32,6 +32,19 @@ rtabmap:
   Grid/RayTracing: 'true'
   Grid/3D: 'false'
 
+  # M2 격자 = 라이다 점군(2D 라이다 2대 + dToF 2대, m2_scan_merge) + 카메라 깊이. 외부 odom 이 아니면(카메라 VO 벤치)
+  # 라이다 입력이 없어 깊이만 쓴다. 시뮬 A/B (2026-10-16, 같은 bag 재생, 오돔 공분산 수정 후):
+  #   카메라만 벽 재현율 0.966·책상 1.0 / 라이다만 0.996·0.2 / 라이다+dToF+카메라(이 값) 0.999·0.93, 틀린 장애물 ≤0.13 m²
+  #   2D 라이다 + 카메라는 라이다 빈칸이 카메라가 본 책상 상판을 지워 0.3 — dToF 를 같이 넣어야 한다.
+  Grid/Sensor: '2'
+  # 자기 몸 거르기 — 로봇 중심 대칭 상자. 차체 x -0.525~0.385·y ±0.327, Base 자세 팔 끝 x 0.485·y ±0.24, 키 1.76 m.
+  # 머리 카메라가 팔을 장애물로 보던 것(경로 따라 두 줄)을 지운다.
+  Grid/FootprintLength: '1.12'
+  Grid/FootprintWidth: '0.72'
+  Grid/FootprintHeight: '1.8'
+  # 노드마다 저장하는 라이다 점군 복셀 [m] — dToF 점이 많아 DB 를 키우지 않게
+  Mem/LaserScanVoxelSize: '0.05'
+
   # 특징점/등록 — 11 = SuperPoint, 매처는 PyMatcher(SuperGlue). 모델 경로는 launch 가 ROS_WS 로 계산.
   Reg/Strategy: '0'
   Kp/DetectorStrategy: '11'
