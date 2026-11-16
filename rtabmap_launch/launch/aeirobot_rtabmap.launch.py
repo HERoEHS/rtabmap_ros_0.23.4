@@ -26,9 +26,12 @@
 #   info  : /camera/color/camera_info
 #
 
+import importlib.util
 import os
+import sqlite3
 
-# 특징 추출기(SuperPoint 가중치·SuperGlue 파이썬) 위치 — 소스 트리 `alice_navigation/localization/feature_extractors`.
+# 특징 추출기(ALIKED · LightGlue 파이썬 스크립트) 위치 — 소스 트리 `alice_navigation/localization/feature_extractors`.
+# 가중치는 스크립트가 상태 자리에서 찾는다 (feature_extractors/aliked_lightglue/README.md).
 # ROS_WS env 를 먼저 보되, 그 아래에 실제로 없으면 이 런치 파일 자신의 위치에서 유도한다 (symlink-install 이라 realpath 가
 # 소스 트리를 가리킨다). Orin dev 이미지 ENV 가 x86 기본값(/home/aeirobot/aeirobot_sim_ws)이라 profile 셸을 안 탄 `docker exec` 에서
 # SuperPoint 가 "No model is loaded" 로 죽던 실측 (2026-09-10) — env 하나에 LC 전체를 걸지 않는다.
@@ -38,9 +41,9 @@ def _feature_extractors_dir():
     here = os.path.dirname(os.path.realpath(__file__))          # .../localization/rtabmap_ros_0.23.4/rtabmap_launch/launch
     cands.append(os.path.normpath(os.path.join(here, '..', '..', '..', 'feature_extractors')))
     for c in cands:
-        if os.path.isfile(os.path.join(c, 'superpoint_v1.pt')):
+        if os.path.isfile(os.path.join(c, 'aliked_lightglue', 'rtabmap_lightglue.py')):
             return c
-    raise RuntimeError(f"feature_extractors 를 못 찾았다 (superpoint_v1.pt 없음): {cands} — ROS_WS 를 확인하거나 소스 트리에 가중치를 둘 것")
+    raise RuntimeError(f"feature_extractors 를 못 찾았다 (aliked_lightglue/rtabmap_lightglue.py 없음): {cands} — ROS_WS 와 소스 트리를 확인할 것")
 
 FEATURE_EXTRACTORS = _feature_extractors_dir()
 ROS_WS = os.environ.get('ROS_WS') or os.path.normpath(os.path.join(FEATURE_EXTRACTORS, '..', '..', '..', '..'))
@@ -145,6 +148,38 @@ def _load_tuning(path):
     return out
 
 
+# 가중치가 없으면 스크립트 init 이 실패해도 rtabmap 은 특징점 0개로 계속 돈다 (프레임마다 UERROR, 루프 클로저 없음).
+# 스크립트와 같은 순서로 찾아 보고 없으면 띄우지 않는다 — 찾는 폴더와 받는 곳은 예외 메시지에 있다.
+def _check_feature_weights():
+    spec = importlib.util.spec_from_file_location(
+        'aliked_lightglue_local_weights', os.path.join(FEATURE_EXTRACTORS, 'aliked_lightglue', 'local_weights.py'))
+    local_weights = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(local_weights)
+    local_weights.check()
+
+
+# 위치추정 모드는 맵 DB 를 그대로 읽는다. 그 맵을 만든 특징 추출기가 지금 설정과 다르면 디스크립터 차원이 달라
+# (SuperPoint 256 ↔ ALIKED 128) rtabmap 이 단어 사전 검색의 UASSERT 로 죽는다 — 띄우기 전에 막는다.
+# 매핑 모드는 -d 로 DB 를 새로 만들므로 보지 않는다.
+def _check_map_detector(db_path, want):
+    db_path = os.path.expanduser(db_path)
+    if not want or not os.path.isfile(db_path):
+        return
+    try:
+        con = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+        try:
+            row = con.execute('SELECT parameters FROM Info ORDER BY time_enter DESC LIMIT 1').fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return                                  # 빈 파일 · 옛 형식 — rtabmap 이 판단한다
+    have = dict(kv.split(':', 1) for kv in (row[0] if row and row[0] else '').split(';') if ':' in kv).get('Kp/DetectorStrategy')
+    if have and have != want:
+        raise RuntimeError(
+            f"[aeirobot_rtabmap] 맵 {db_path} 는 Kp/DetectorStrategy {have} 로 만들어졌는데 지금 설정은 {want} 이다 — "
+            f"디스크립터가 달라 이 맵으로는 위치추정을 못 한다. 맵을 다시 만들거나 rtabmap-reprocess 로 특징을 다시 뽑을 것")
+
+
 def launch_setup(context, *args, **kwargs):
 
     localization = LaunchConfiguration('localization')
@@ -153,7 +188,7 @@ def launch_setup(context, *args, **kwargs):
     wait_imu = (LaunchConfiguration('wait_imu_to_init').perform(context)
                 or LaunchConfiguration('use_imu').perform(context)).lower() in ('true', '1')
 
-    # rtabmap_threads=0 은 "제한 없음" 인데 OMP_NUM_THREADS=0 을 그대로 주면 libtorch(SuperPoint)가
+    # rtabmap_threads=0 은 "제한 없음" 인데 OMP_NUM_THREADS=0 을 그대로 주면 libtorch(특징 추출)가
     # "Invalid OMP_NUM_THREADS ... nthreads > 0" 예외를 특징 추출마다 찍는다 (2026-09-09 Orin 실측, 50회/분).
     # 0 이면 env 를 아예 안 준다 (= 상류 기본, 코어 수만큼).
     _thr = LaunchConfiguration('rtabmap_threads').perform(context).strip()
@@ -161,6 +196,10 @@ def launch_setup(context, *args, **kwargs):
                   {k: _thr for k in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')})
 
     tuning = _load_tuning(LaunchConfiguration('rtabmap_params').perform(context))
+    _check_feature_weights()
+    if localization.perform(context) == 'true':
+        _check_map_detector(LaunchConfiguration('database_path').perform(context),
+                            tuning.get('rtabmap', {}).get('Kp/DetectorStrategy'))
     # detection_rate:=N 이 명시되면 yaml 의 Rtabmap/DetectionRate 를 덮는다 (빈 값 = yaml).
     detection_rate = LaunchConfiguration('detection_rate').perform(context)
     detection_override = {'Rtabmap/DetectionRate': detection_rate} if detection_rate else {}
@@ -217,12 +256,13 @@ def launch_setup(context, *args, **kwargs):
     # 카메라 여러 대: rgbdx_sync 출력(RGBDImages)을 받는다 — 예: aeirobot_orbbec_camera m2_camera.launch.py. 빈 값이면 종전 그대로.
     # rtabmap rgbd_cameras:=N 경로는 이 빌드에서 안 된다(rtabmap_sync RTABMAP_SYNC_MULTI_RGBD=OFF) — rgbd_cameras=0 + rgbd_images.
     # 멀티카메라 PnP 는 OpenGV 가 있어야 하는데 설치된 core 에 없다 → Vis/EstimationType 0(3D-3D).
-    # SuperGlue 는 카메라 1대일 때만 쓰인다 → Vis/CorNNType 5(BF cross-check), 모델을 로드하지 않는다.
+    # 매처(PyMatcher LightGlue)는 카메라 여러 대도 받는다 — rtabmap 포크의 PyMatcher 가 MULTI_CAMERA 를 선언한 스크립트에
+    # 이어 붙인 특징점을 넘긴다. 그 수정이 없는 rtabmap core 에서는 여러 대일 때 BF cross-check 로 떨어진다.
     # 카메라끼리 스탬프가 어긋나므로 odom_sensor_sync 로 각 카메라 자세를 odom 시점에 맞춘다.
     rgbd_images = LaunchConfiguration('rgbd_images_topic').perform(context)
     rgbdx = ({'subscribe_depth': False, 'subscribe_rgbd': True, 'rgbd_cameras': 0, 'subscribe_odom_info': False}
              if rgbd_images else {})
-    rgbdx_slam = ({**rgbdx, 'odom_sensor_sync': True, 'Vis/EstimationType': '0', 'Vis/CorNNType': '5'}
+    rgbdx_slam = ({**rgbdx, 'odom_sensor_sync': True, 'Vis/EstimationType': '0'}
                   if rgbd_images else {})
     rgbdx_remap = [('rgbd_images', rgbd_images)] if rgbd_images else []
 
@@ -237,7 +277,7 @@ def launch_setup(context, *args, **kwargs):
                         ('imu/data', LaunchConfiguration('imu_topic'))],
             condition=IfCondition(LaunchConfiguration('use_imu'))),
 
-        ### Visual Odometry (rtabmap 제공 RGB-D VO — 기본 GFTT, SuperPoint는 rtabmap 노드 전용) ###
+        ### Visual Odometry (rtabmap 제공 RGB-D VO — 기본 GFTT, ALIKED 는 rtabmap 노드 전용) ###
         Node(
             condition=IfCondition(LaunchConfiguration('launch_odometry')),
             package='rtabmap_odom', executable='rgbd_odometry', name='rgbd_odometry', output='screen',
@@ -259,7 +299,7 @@ def launch_setup(context, *args, **kwargs):
             package='rtabmap_slam', executable='rtabmap', name='rtabmap', output='screen',
             # GB급 DB의 사전 저장이 끝나기 전에 launch가 종료 신호를 올리지 않는다.
             sigterm_timeout='60', sigkill_timeout='10',
-            # 튠 값(Grid/Vis/Kp/SuperPoint/Optimizer/LC 임계 …)은 config/<세대>/rtabmap_params.yaml rtabmap: 절.
+            # 튠 값(Grid/Vis/Kp/PyMatcher/Optimizer/LC 임계 …)은 config/<세대>/rtabmap_params.yaml rtabmap: 절.
             # 여기 남은 것은 launch 인자·환경으로 계산되는 값만 — yaml 보다 뒤라 yaml 을 덮는다.
             parameters=[{**common_params, **tuning.get('rtabmap', {}), **{
                 'map_frame_id': LaunchConfiguration('map_frame_id'),
@@ -288,9 +328,9 @@ def launch_setup(context, *args, **kwargs):
                 'Reg/Force3DoF': ParameterValue(force_3dof, value_type=str),
                 'RGBD/ForceOdom3DoF': ParameterValue(force_3dof, value_type=str),
 
-                # 모델 경로는 워크스페이스 위치(ROS_WS)에 묶여 있어 launch 가 계산한다
-                'SuperPoint/ModelPath': os.path.join(FEATURE_EXTRACTORS, 'superpoint_v1.pt'),
-                'PyMatcher/Path': os.path.join(FEATURE_EXTRACTORS, 'SuperGluePretrainedNetwork', 'rtabmap_superglue.py'),
+                # 스크립트 경로는 워크스페이스 위치(ROS_WS)에 묶여 있어 launch 가 계산한다
+                'PyDetector/Path': os.path.join(FEATURE_EXTRACTORS, 'aliked_lightglue', 'rtabmap_aliked.py'),
+                'PyMatcher/Path': os.path.join(FEATURE_EXTRACTORS, 'aliked_lightglue', 'rtabmap_lightglue.py'),
             }, **detection_override, **rgbdx_slam, **odom_tf, **scan_params}],
             # odom_topic 기본 'odom'(상대) = 종전 그대로 VO(/rtabmap/odom) 소비.
             # 외부 odom(EKF 등) 쓸 땐 launch_odometry:=false odom_topic:=/odometry/filtered
