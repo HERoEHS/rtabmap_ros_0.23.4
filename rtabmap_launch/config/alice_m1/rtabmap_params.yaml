@@ -19,7 +19,7 @@
 # 적용은 재기동 시 (rtabmap 은 init 때 한 번 읽는다).
 
 rtabmap:
-  # loop closure 감지율 [Hz]. SuperPoint/SuperGlue 가 GPU 를 쓰므로 작은 GPU 에서
+  # loop closure 감지율 [Hz]. 특징 추출 · 매칭이 GPU 를 쓰므로 작은 GPU 에서
   # 세만틱과 경합하면 1 로 낮출 것. lifelong 스택은 TRT 전환으로 여유 확보 후 2 복원.
   Rtabmap/DetectionRate: '2'
   Mem/RecentWmRatio: '0.3'
@@ -32,10 +32,15 @@ rtabmap:
   Grid/RayTracing: 'true'
   Grid/3D: 'false'
 
-  # 특징점/등록 — 11 = SuperPoint, 매처는 PyMatcher(SuperGlue). 모델 경로는 launch 가 ROS_WS 로 계산.
+  # 특징점/등록 — Kp/DetectorStrategy 한 줄이 특징 추출 · 매칭 묶음을 고른다. 묶음의 나머지 값은 launch 가 채운다
+  # (aeirobot_rtabmap.launch.py _feature_params): Vis/FeatureType · 모델 이름 · 스크립트 경로는 묶음이 정하고, 임계 같은
+  # 조정 값(SuperPoint/Threshold · PyMatcher/Threshold …)은 여기 적으면 그 값이 이긴다.
+  #   '11' = SuperPoint + SuperGlue — 지금까지 쓰던 것. MagicLeap 비상업 · 연구용 라이선스라 고객 배포본에는 못 싣는다.
+  #   '15' = ALIKED + LightGlue    — 바꿔 갈 것 (BSD-3 · Apache-2.0). 카메라 여러 대도 LightGlue 로 매칭한다.
+  # 두 묶음은 디스크립터가 달라(256 ↔ 128차원) 맵 DB 를 서로 못 쓴다 — 바꾸면 맵을 다시 만들거나 rtabmap-reprocess 로
+  # 특징을 다시 뽑는다. 다른 묶음으로 만든 맵으로 위치추정을 띄우면 launch 가 이유를 적고 멈춘다 (값을 되돌리면 다시 쓴다).
   Reg/Strategy: '0'
   Kp/DetectorStrategy: '11'
-  Vis/FeatureType: '11'
   Vis/MaxFeatures: '1000'
   Kp/MaxFeatures: '1000'
   ORB/Gpu: 'false'
@@ -59,13 +64,6 @@ rtabmap:
   RGBD/LocalRadius: '15.0'
   Rtabmap/LoopThr: '0.11'
   RGBD/MaxOdomCacheSize: '30'    # 10→30: 오탐 사후 기각(OptimizeMaxError) 검사창 확대
-
-  # SuperPoint / SuperGlue
-  SuperPoint/Threshold: '0.005'
-  SuperPoint/NMSRadius: '4'
-  PyMatcher/Iterations: '40'
-  PyMatcher/Threshold: '0.2'
-  PyMatcher/Model: 'indoor'
 
   # Prior 워크플로 (with_gui 와 동일)
   Optimizer/PriorsIgnored: 'false'
