@@ -30,20 +30,23 @@ import importlib.util
 import os
 import sqlite3
 
-# 특징 추출기(ALIKED · LightGlue 파이썬 스크립트) 위치 — 소스 트리 `alice_navigation/localization/feature_extractors`.
-# 가중치는 스크립트가 상태 자리에서 찾는다 (feature_extractors/aliked_lightglue/README.md).
+# 특징 추출기(SuperPoint 가중치 · SuperGlue 파이썬, ALIKED · LightGlue 파이썬) 위치 — 소스 트리
+# `alice_navigation/localization/feature_extractors`. 어느 묶음을 쓸지는 아래 _feature_params 가 정한다.
 # ROS_WS env 를 먼저 보되, 그 아래에 실제로 없으면 이 런치 파일 자신의 위치에서 유도한다 (symlink-install 이라 realpath 가
 # 소스 트리를 가리킨다). Orin dev 이미지 ENV 가 x86 기본값(/home/aeirobot/aeirobot_sim_ws)이라 profile 셸을 안 탄 `docker exec` 에서
 # SuperPoint 가 "No model is loaded" 로 죽던 실측 (2026-09-10) — env 하나에 LC 전체를 걸지 않는다.
+_FEATURE_KEYS = ('superpoint_v1.pt', os.path.join('aliked_lightglue', 'rtabmap_lightglue.py'))
+
+
 def _feature_extractors_dir():
     ws = os.environ.get('ROS_WS', '')
     cands = [os.path.join(ws, 'src', 'alice_navigation', 'localization', 'feature_extractors')] if ws else []
     here = os.path.dirname(os.path.realpath(__file__))          # .../localization/rtabmap_ros_0.23.4/rtabmap_launch/launch
     cands.append(os.path.normpath(os.path.join(here, '..', '..', '..', 'feature_extractors')))
     for c in cands:
-        if os.path.isfile(os.path.join(c, 'aliked_lightglue', 'rtabmap_lightglue.py')):
+        if any(os.path.isfile(os.path.join(c, key)) for key in _FEATURE_KEYS):
             return c
-    raise RuntimeError(f"feature_extractors 를 못 찾았다 (aliked_lightglue/rtabmap_lightglue.py 없음): {cands} — ROS_WS 와 소스 트리를 확인할 것")
+    raise RuntimeError(f"feature_extractors 를 못 찾았다 ({' · '.join(_FEATURE_KEYS)} 둘 다 없음): {cands} — ROS_WS 와 소스 트리를 확인할 것")
 
 FEATURE_EXTRACTORS = _feature_extractors_dir()
 ROS_WS = os.environ.get('ROS_WS') or os.path.normpath(os.path.join(FEATURE_EXTRACTORS, '..', '..', '..', '..'))
@@ -148,18 +151,49 @@ def _load_tuning(path):
     return out
 
 
-# 가중치가 없으면 스크립트 init 이 실패해도 rtabmap 은 특징점 0개로 계속 돈다 (프레임마다 UERROR, 루프 클로저 없음).
-# 스크립트와 같은 순서로 찾아 보고 없으면 띄우지 않는다 — 찾는 폴더와 받는 곳은 예외 메시지에 있다.
-def _check_feature_weights():
-    spec = importlib.util.spec_from_file_location(
-        'aliked_lightglue_local_weights', os.path.join(FEATURE_EXTRACTORS, 'aliked_lightglue', 'local_weights.py'))
-    local_weights = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(local_weights)
-    local_weights.check()
+# 특징 추출 · 매칭 묶음 — rtabmap_params.yaml 의 Kp/DetectorStrategy 한 줄이 고른다.
+#   11 = SuperPoint + SuperGlue — 지금까지 쓰던 것. MagicLeap 비상업 · 연구용 라이선스라 고객 배포본에는 못 싣는다.
+#   15 = ALIKED + LightGlue    — 바꿔 갈 것 (BSD-3 · Apache-2.0, feature_extractors/aliked_lightglue/README.md).
+# 돌려주는 것은 (조정 값, 묶음이 정하는 값). 조정 값은 yaml 에 같은 키를 적으면 yaml 이 이기고, 묶음이 정하는 값
+# (Vis/FeatureType · 모델 이름 · 경로)은 yaml 을 덮는다 — 옛 yaml 에서 Kp/DetectorStrategy 한 줄만 바꿔도 묶음이 섞이지 않게.
+# 스크립트 · 모델 경로는 워크스페이스 위치(ROS_WS)에 묶여 있어 여기서 계산한다. 그 밖의 값(rtabmap 내장 추출기)은 손대지 않는다.
+def _feature_params(strategy):
+    if strategy == '11':
+        return ({'SuperPoint/Threshold': '0.005', 'SuperPoint/NMSRadius': '4',
+                 'PyMatcher/Iterations': '40', 'PyMatcher/Threshold': '0.2'},
+                {'Vis/FeatureType': '11', 'PyMatcher/Model': 'indoor',
+                 'SuperPoint/ModelPath': os.path.join(FEATURE_EXTRACTORS, 'superpoint_v1.pt'),
+                 'PyMatcher/Path': os.path.join(FEATURE_EXTRACTORS, 'SuperGluePretrainedNetwork', 'rtabmap_superglue.py')})
+    if strategy == '15':
+        # PyMatcher/Threshold = LightGlue filter_threshold, PyMatcher/Model = 추출기에 맞는 LightGlue 가중치 이름
+        return ({'PyMatcher/Threshold': '0.1'},
+                {'Vis/FeatureType': '15', 'PyMatcher/Model': 'aliked',
+                 'PyDetector/Path': os.path.join(FEATURE_EXTRACTORS, 'aliked_lightglue', 'rtabmap_aliked.py'),
+                 'PyMatcher/Path': os.path.join(FEATURE_EXTRACTORS, 'aliked_lightglue', 'rtabmap_lightglue.py')})
+    return {}, {}
+
+
+# 고른 묶음의 모델 · 가중치가 없으면 띄우지 않는다. 그냥 두면 rtabmap 은 특징점 0개로 계속 돈다
+# (SuperPoint "No model is loaded", ALIKED 는 프레임마다 스크립트 init UERROR — 어느 쪽이든 루프 클로저 없음).
+# SuperPoint 쪽은 전부터 보던 것(superpoint_v1.pt)만 본다.
+def _check_feature_files(strategy):
+    if strategy == '11':
+        model = os.path.join(FEATURE_EXTRACTORS, 'superpoint_v1.pt')
+        if not os.path.isfile(model):
+            raise RuntimeError(f'[aeirobot_rtabmap] SuperPoint 가중치가 없다: {model}')
+    elif strategy == '15':
+        script = os.path.join(FEATURE_EXTRACTORS, 'aliked_lightglue', 'local_weights.py')
+        if not os.path.isfile(script):
+            raise RuntimeError(f'[aeirobot_rtabmap] ALIKED · LightGlue 스크립트가 없다: {os.path.dirname(script)}')
+        spec = importlib.util.spec_from_file_location('aliked_lightglue_local_weights', script)
+        local_weights = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(local_weights)
+        local_weights.check()               # 스크립트와 같은 순서로 찾는다 — 찾는 폴더와 받는 곳이 예외 메시지에 있다
 
 
 # 위치추정 모드는 맵 DB 를 그대로 읽는다. 그 맵을 만든 특징 추출기가 지금 설정과 다르면 디스크립터 차원이 달라
-# (SuperPoint 256 ↔ ALIKED 128) rtabmap 이 단어 사전 검색의 UASSERT 로 죽는다 — 띄우기 전에 막는다.
+# (SuperPoint 256 ↔ ALIKED 128) rtabmap 이 단어 사전 검색의 UASSERT 로 죽는다 — 띄우기 전에 막는다. 묶음을 바꿔 볼 때
+# 옛 맵을 그대로 둔 실수를 여기서 잡는다 (Kp/DetectorStrategy 를 되돌리면 그 맵은 다시 쓸 수 있다).
 # 매핑 모드는 -d 로 DB 를 새로 만들므로 보지 않는다.
 def _check_map_detector(db_path, want):
     db_path = os.path.expanduser(db_path)
@@ -196,10 +230,11 @@ def launch_setup(context, *args, **kwargs):
                   {k: _thr for k in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')})
 
     tuning = _load_tuning(LaunchConfiguration('rtabmap_params').perform(context))
-    _check_feature_weights()
+    strategy = tuning.get('rtabmap', {}).get('Kp/DetectorStrategy')
+    feature_tunables, feature_fixed = _feature_params(strategy)
+    _check_feature_files(strategy)
     if localization.perform(context) == 'true':
-        _check_map_detector(LaunchConfiguration('database_path').perform(context),
-                            tuning.get('rtabmap', {}).get('Kp/DetectorStrategy'))
+        _check_map_detector(LaunchConfiguration('database_path').perform(context), strategy)
     # detection_rate:=N 이 명시되면 yaml 의 Rtabmap/DetectionRate 를 덮는다 (빈 값 = yaml).
     detection_rate = LaunchConfiguration('detection_rate').perform(context)
     detection_override = {'Rtabmap/DetectionRate': detection_rate} if detection_rate else {}
@@ -256,13 +291,15 @@ def launch_setup(context, *args, **kwargs):
     # 카메라 여러 대: rgbdx_sync 출력(RGBDImages)을 받는다 — 예: aeirobot_orbbec_camera m2_camera.launch.py. 빈 값이면 종전 그대로.
     # rtabmap rgbd_cameras:=N 경로는 이 빌드에서 안 된다(rtabmap_sync RTABMAP_SYNC_MULTI_RGBD=OFF) — rgbd_cameras=0 + rgbd_images.
     # 멀티카메라 PnP 는 OpenGV 가 있어야 하는데 설치된 core 에 없다 → Vis/EstimationType 0(3D-3D).
-    # 매처(PyMatcher LightGlue)는 카메라 여러 대도 받는다 — rtabmap 포크의 PyMatcher 가 MULTI_CAMERA 를 선언한 스크립트에
-    # 이어 붙인 특징점을 넘긴다. 그 수정이 없는 rtabmap core 에서는 여러 대일 때 BF cross-check 로 떨어진다.
+    # SuperGlue 는 카메라 1대일 때만 쓰인다 → Vis/CorNNType 5(BF cross-check), 모델을 로드하지 않는다.
+    # LightGlue 스크립트는 카메라 여러 대도 받는다 (rtabmap 포크의 PyMatcher 가 MULTI_CAMERA 를 선언한 스크립트에 이어 붙인
+    # 특징점을 넘긴다) — yaml 의 Vis/CorNNType 6 을 그대로 둔다. 그 수정이 없는 rtabmap core 에서는 BF 로 떨어진다.
     # 카메라끼리 스탬프가 어긋나므로 odom_sensor_sync 로 각 카메라 자세를 odom 시점에 맞춘다.
     rgbd_images = LaunchConfiguration('rgbd_images_topic').perform(context)
     rgbdx = ({'subscribe_depth': False, 'subscribe_rgbd': True, 'rgbd_cameras': 0, 'subscribe_odom_info': False}
              if rgbd_images else {})
-    rgbdx_slam = ({**rgbdx, 'odom_sensor_sync': True, 'Vis/EstimationType': '0'}
+    rgbdx_slam = ({**rgbdx, 'odom_sensor_sync': True, 'Vis/EstimationType': '0',
+                   **({} if strategy == '15' else {'Vis/CorNNType': '5'})}
                   if rgbd_images else {})
     rgbdx_remap = [('rgbd_images', rgbd_images)] if rgbd_images else []
 
@@ -277,7 +314,7 @@ def launch_setup(context, *args, **kwargs):
                         ('imu/data', LaunchConfiguration('imu_topic'))],
             condition=IfCondition(LaunchConfiguration('use_imu'))),
 
-        ### Visual Odometry (rtabmap 제공 RGB-D VO — 기본 GFTT, ALIKED 는 rtabmap 노드 전용) ###
+        ### Visual Odometry (rtabmap 제공 RGB-D VO — 기본 GFTT, SuperPoint · ALIKED 는 rtabmap 노드 전용) ###
         Node(
             condition=IfCondition(LaunchConfiguration('launch_odometry')),
             package='rtabmap_odom', executable='rgbd_odometry', name='rgbd_odometry', output='screen',
@@ -299,9 +336,9 @@ def launch_setup(context, *args, **kwargs):
             package='rtabmap_slam', executable='rtabmap', name='rtabmap', output='screen',
             # GB급 DB의 사전 저장이 끝나기 전에 launch가 종료 신호를 올리지 않는다.
             sigterm_timeout='60', sigkill_timeout='10',
-            # 튠 값(Grid/Vis/Kp/PyMatcher/Optimizer/LC 임계 …)은 config/<세대>/rtabmap_params.yaml rtabmap: 절.
+            # 튠 값(Grid/Vis/Kp/Optimizer/LC 임계 …, 특징 묶음은 Kp/DetectorStrategy)은 config/<세대>/rtabmap_params.yaml rtabmap: 절.
             # 여기 남은 것은 launch 인자·환경으로 계산되는 값만 — yaml 보다 뒤라 yaml 을 덮는다.
-            parameters=[{**common_params, **tuning.get('rtabmap', {}), **{
+            parameters=[{**common_params, **feature_tunables, **tuning.get('rtabmap', {}), **{
                 'map_frame_id': LaunchConfiguration('map_frame_id'),
                 'publish_tf': LaunchConfiguration('publish_tf_map'),
                 'initial_pose': LaunchConfiguration('initial_pose'),
@@ -328,10 +365,7 @@ def launch_setup(context, *args, **kwargs):
                 'Reg/Force3DoF': ParameterValue(force_3dof, value_type=str),
                 'RGBD/ForceOdom3DoF': ParameterValue(force_3dof, value_type=str),
 
-                # 스크립트 경로는 워크스페이스 위치(ROS_WS)에 묶여 있어 launch 가 계산한다
-                'PyDetector/Path': os.path.join(FEATURE_EXTRACTORS, 'aliked_lightglue', 'rtabmap_aliked.py'),
-                'PyMatcher/Path': os.path.join(FEATURE_EXTRACTORS, 'aliked_lightglue', 'rtabmap_lightglue.py'),
-            }, **detection_override, **rgbdx_slam, **odom_tf, **scan_params}],
+            }, **feature_fixed, **detection_override, **rgbdx_slam, **odom_tf, **scan_params}],
             # odom_topic 기본 'odom'(상대) = 종전 그대로 VO(/rtabmap/odom) 소비.
             # 외부 odom(EKF 등) 쓸 땐 launch_odometry:=false odom_topic:=/odometry/filtered
             remappings=remappings + [('map', LaunchConfiguration('map_topic')),
