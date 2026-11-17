@@ -303,8 +303,19 @@ def launch_setup(context, *args, **kwargs):
                   if rgbd_images else {})
     rgbdx_remap = [('rgbd_images', rgbd_images)] if rgbd_images else []
 
+    # 시뮬 정답 자세 — ground_truth_topic(nav_msgs/Odometry)을 주면 그것을 TF 로 옮기는 노드를 띄우고, rtabmap 이 맵 노드마다
+    # 정답 자세를 DB 에 남긴다 (Node.ground_truth_pose → 위치추정 · 맵의 절대 오차를 잴 수 있다).
+    # 기본은 끔: 정답 TF 가 없는데 켜 두면 rtabmap 이 프레임마다 wait_for_transform 만큼 기다린다. Isaac 프로필만 준다.
+    gt_topic = LaunchConfiguration('ground_truth_topic').perform(context)
+    gt_frames = {'frame_id': 'sim_ground_truth', 'child_frame_id': 'sim_ground_truth_base'}
+    gt_params = ({'ground_truth_frame_id': gt_frames['frame_id'], 'ground_truth_base_frame_id': gt_frames['child_frame_id']}
+                 if gt_topic else {})
+    gt_nodes = [Node(package='rtabmap_launch', executable='ground_truth_tf.py', name='ground_truth_tf', output='screen',
+                     parameters=[gt_frames], remappings=[('ground_truth', gt_topic)])] if gt_topic else []
+
     return [
         SetParameter(name='use_sim_time', value=LaunchConfiguration('use_sim_time')),
+        *gt_nodes,
 
         ### IMU orientation 필터 (orbbec IMU는 raw만 발행 — rtabmap은 orientation 필요) ###
         Node(
@@ -365,7 +376,7 @@ def launch_setup(context, *args, **kwargs):
                 'Reg/Force3DoF': ParameterValue(force_3dof, value_type=str),
                 'RGBD/ForceOdom3DoF': ParameterValue(force_3dof, value_type=str),
 
-            }, **feature_fixed, **detection_override, **rgbdx_slam, **odom_tf, **scan_params}],
+            }, **feature_fixed, **detection_override, **rgbdx_slam, **odom_tf, **scan_params, **gt_params}],
             # odom_topic 기본 'odom'(상대) = 종전 그대로 VO(/rtabmap/odom) 소비.
             # 외부 odom(EKF 등) 쓸 땐 launch_odometry:=false odom_topic:=/odometry/filtered
             remappings=remappings + [('map', LaunchConfiguration('map_topic')),
@@ -494,6 +505,9 @@ def generate_launch_description():
         DeclareLaunchArgument('odom_topic', default_value='',
                               description='rtabmap odom 입력. 기본은 VO(rgbd_odometry) 출력. '
                                           '외부 odom(robot_localization EKF)이면 launch_odometry:=false 와 함께 지정'),
+        DeclareLaunchArgument('ground_truth_topic', default_value='',
+                              description='시뮬 정답 자세 Odometry 토픽. 주면 맵 노드마다 정답 자세를 DB 에 남긴다 '
+                                          '(Isaac M1 /aeirobot/sim/gt_odom, M2 /aeirobot/odometry_gt). 비우면 끔(실물)'),
         DeclareLaunchArgument('scan_cloud_topic', default_value='',
                               description='라이다 점군 입력(scan_cloud). 비우면 카메라만(종전). M2 = /m2/scan_cloud (m2_scan_merge)'),
         DeclareLaunchArgument('scan_cloud_is_2d', default_value='false',
