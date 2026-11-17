@@ -37,6 +37,9 @@ def _setup(context, *_):
             launch_arguments={'m2_config': path}.items()))
     lidar = LaunchConfiguration('lidar_scan').perform(context).lower() in ('true', '1')
     args = m2_config.rtabmap_args(cfg, multi, LaunchConfiguration('odom_topic').perform(context), lidar)
+    gt = LaunchConfiguration('ground_truth_topic').perform(context)
+    if gt:                      # 시뮬 정답 자세 — 준 때만 넘긴다 (aeirobot_rtabmap 머리말). 비면 인자 묶음은 종전 그대로
+        args = {**args, 'ground_truth_topic': gt}
     acts.append(IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(os.path.dirname(_HERE), 'aeirobot_rtabmap.launch.py')),
         launch_arguments=args.items()))
@@ -66,5 +69,8 @@ def generate_launch_description():
                               description='2D 라이다 빔 시각 규약 — ydlidar = 실물 드라이버(0° 에서 시작해 각도 증가), '
                                           'isaac = Isaac 평면 스캔(+10° 에서 시작해 각도 감소, 시뮬 프로파일), '
                                           'index = ROS 규약(배열 순서). m2_config LIDAR_BEAM_TIMES 주석'),
+        DeclareLaunchArgument('ground_truth_topic', default_value='',
+                              description='시뮬 정답 자세 Odometry 토픽 (Isaac M2 = /aeirobot/odometry_gt). aeirobot_rtabmap 이 '
+                                          '그대로 받아 맵 노드마다 정답 자세를 남긴다. 비우면 끔(실물)'),
         OpaqueFunction(function=_setup),
     ])

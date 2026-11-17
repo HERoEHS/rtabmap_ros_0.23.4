@@ -9,4 +9,8 @@ install(DIRECTORY launch config
    PATTERN ".omc" EXCLUDE
 )
 
+install(PROGRAMS scripts/ground_truth_tf.py
+   DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()
