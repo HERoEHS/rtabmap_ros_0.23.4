@@ -12,6 +12,7 @@ aeirobot_rtabmap.launch.py 가 ground_truth_topic 인자를 받았을 때만 띄
 import rclpy
 from geometry_msgs.msg import TransformStamped
 from rclpy.clock import Clock, ClockType
+from rclpy.executors import ExternalShutdownException
 from nav_msgs.msg import Odometry
 from rclpy.qos import qos_profile_sensor_data
 from tf2_ros import TransformBroadcaster
@@ -60,7 +61,7 @@ def main():
     timer = node.create_timer(5.0, check, clock=Clock(clock_type=ClockType.STEADY_TIME))    # 시뮬 시계가 멈춰 있어도 알리게 벽시계로
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):   # 종료 신호 — Jazzy 는 ExternalShutdownException 으로 온다
         pass
 
 
