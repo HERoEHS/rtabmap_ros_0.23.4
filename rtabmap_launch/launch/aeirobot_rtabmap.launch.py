@@ -28,6 +28,7 @@
 
 import importlib.util
 import os
+import re
 import sqlite3
 
 # 특징 추출기(SuperPoint 가중치 · SuperGlue 파이썬, ALIKED · LightGlue 파이썬) 위치 — 소스 트리
@@ -126,17 +127,19 @@ def _apply_camera_preset(context, *_):
             if LaunchConfiguration(k).perform(context) == '']
 
 
+def _s(v):
+    if isinstance(v, bool):
+        return 'true' if v else 'false'
+    return str(v)
+
+
 def _load_tuning(path):
     """config/<세대>/rtabmap_params.yaml → {노드이름: {'Xxx/Yyy': '문자열'}}.
 
     rtabmap 코어 파라미터는 전부 string 선언이라 yaml 타입추론(0.11→double, false→bool)이
     그대로 노드에 닿으면 declare 시 타입 충돌로 죽는다. 여기서 문자열로 정규화해 그 함정을
     없앤다 — 고객이 따옴표를 빼도 안전. 배포본은 launch 본문이 .so 로 봉인되므로 튠 값은
-    이 yaml 이 유일한 손잡이다 (docker/docs/55-user-config.md)."""
-    def _s(v):
-        if isinstance(v, bool):
-            return 'true' if v else 'false'
-        return str(v)
+    이 yaml 과 feature_matching.yaml 이 유일한 손잡이다 (docker/docs/55-user-config.md)."""
     with open(path, encoding='utf-8') as f:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
@@ -151,11 +154,56 @@ def _load_tuning(path):
     return out
 
 
-# 특징 추출 · 매칭 묶음 — rtabmap_params.yaml 의 Kp/DetectorStrategy 한 줄이 고른다.
+# 특징 추출 · 매칭 묶음 — config/<세대>/feature_matching.yaml 의 use 한 줄이 sets 에서 고른다 (rtabmap_params.yaml 옆 파일).
+# 묶음마다 다른 값(추출 · 매칭 임계, 특징점 수, 루프 수락 문턱)을 묶음별로 적어 두어 한 줄로 바꿔도 그 묶음으로 검증한 값이 따라온다.
+# 묶음 안의 mapping: · localization: 은 그 모드에서만 덧씌운다. 조정 지침은 config/README.md.
+# 돌려주는 것은 (묶음 이름, {'Xxx/Yyy': '문자열'}). 파일이 없으면 멈춘다 — 옛 rtabmap_params.yaml 만으로 띄우면 M2 는 전에 프로필이
+# 넘기던 루프 수락 문턱(1.5 · 매핑 50) 없이 돌게 된다.
+def _load_feature_set(path, localization):
+    if not os.path.isfile(path):
+        raise RuntimeError(f'[aeirobot_rtabmap] {path} 가 없다 — 특징 추출 · 매칭 묶음을 정하는 파일이다 (rtabmap_params.yaml 옆). '
+                           '배포본은 aeirobot up 으로 config 를 다시 시딩하고, 개발 워크스페이스는 rtabmap_launch 를 다시 빌드할 것')
+    with open(path, encoding='utf-8') as f:
+        data = yaml.safe_load(f) or {}
+    sets = data.get('sets') if isinstance(data, dict) else None
+    name = data.get('use') if isinstance(data, dict) else None
+    if not isinstance(sets, dict) or not isinstance(sets.get(name), dict):
+        names = ' · '.join(map(str, sets)) if isinstance(sets, dict) else '(sets 가 없다)'
+        raise RuntimeError(f'[aeirobot_rtabmap] {path}: use: {name} 은 sets 에 없는 이름이다 — 고를 수 있는 것: {names}')
+    chosen = dict(sets[name])
+    modes = {mode: chosen.pop(mode, None) for mode in ('mapping', 'localization')}
+    for mode, values in modes.items():          # 안 쓰는 모드도 지금 본다 — 그 모드로 처음 띄울 때 멈추지 않게
+        if values is not None and not isinstance(values, dict):
+            raise RuntimeError(f'[aeirobot_rtabmap] {path}: {name}: {mode}: 아래는 "Xxx/Yyy: 값" 맵이어야 함')
+    nested = sorted({str(k) for part in (chosen, *filter(None, modes.values())) for k, v in part.items() if isinstance(v, (dict, list))})
+    if nested:
+        raise RuntimeError(f'[aeirobot_rtabmap] {path}: {name}: {" · ".join(nested)} 는 "Xxx/Yyy: 값" 한 줄이어야 함 (들여쓰기 확인)')
+    chosen.update(modes['localization' if localization else 'mapping'] or {})
+    if _s(chosen.get('Kp/DetectorStrategy')) not in ('11', '15'):       # 그 밖의 번호는 모델 · 스크립트 경로 없이 특징점 0개로 돈다
+        raise RuntimeError(f"[aeirobot_rtabmap] {path}: {name}: Kp/DetectorStrategy 는 11(SuperPoint) 또는 15(ALIKED)여야 한다 "
+                           f"— 지금 값: {chosen.get('Kp/DetectorStrategy')}")
+    return str(name), {str(k): _s(v) for k, v in chosen.items()}
+
+
+# feature_matching.yaml 로 옮긴 키의 옛 출하값. .seed 가 없는 구 설치나 편집해 둔 기기에는 옛 rtabmap_params.yaml 이 그대로 남아
+# 이 키들을 아직 갖고 있다. 옛 출하값 그대로면 남은 줄일 뿐이라 묶음이 정하고, 다른 값이면 누가 고친 것이라 덮지 않고 멈춘다.
+_MOVED_DEFAULTS = {'Kp/DetectorStrategy': '11', 'Kp/MaxFeatures': '1000', 'Vis/MaxFeatures': '1000', 'Vis/CorNNType': '6',
+                   'Vis/MinInliers': '30', 'RGBD/OptimizeMaxError': '3.0'}
+
+
+def _same(a, b):
+    """문자열로 정규화한 두 값이 같은가 — 숫자는 숫자로 견준다 ('3' 과 '3.0')."""
+    try:
+        return float(a) == float(b)
+    except (TypeError, ValueError):
+        return a == b
+
+
+# 묶음(Kp/DetectorStrategy)이 정하는 나머지 값.
 #   11 = SuperPoint + SuperGlue — 지금까지 쓰던 것. MagicLeap 비상업 · 연구용 라이선스라 고객 배포본에는 못 싣는다.
 #   15 = ALIKED + LightGlue    — 바꿔 갈 것 (BSD-3 · Apache-2.0, feature_extractors/aliked_lightglue/README.md).
-# 돌려주는 것은 (조정 값, 묶음이 정하는 값). 조정 값은 yaml 에 같은 키를 적으면 yaml 이 이기고, 묶음이 정하는 값
-# (Vis/FeatureType · 모델 이름 · 경로)은 yaml 을 덮는다 — 옛 yaml 에서 Kp/DetectorStrategy 한 줄만 바꿔도 묶음이 섞이지 않게.
+# 돌려주는 것은 (조정 값 기본, 묶음이 정하는 값). 조정 값 기본은 묶음(사본 포함)이 그 키를 안 적었을 때 쓰인다 — yaml 에 같은
+# 키가 있으면 yaml 이 이긴다. 묶음이 정하는 값(Vis/FeatureType · 모델 이름 · 경로)은 yaml 을 덮는다 — 묶음이 섞이지 않게.
 # 스크립트 · 모델 경로는 워크스페이스 위치(ROS_WS)에 묶여 있어 여기서 계산한다. 그 밖의 값(rtabmap 내장 추출기)은 손대지 않는다.
 def _feature_params(strategy):
     if strategy == '11':
@@ -193,7 +241,7 @@ def _check_feature_files(strategy):
 
 # 위치추정 모드는 맵 DB 를 그대로 읽는다. 그 맵을 만든 특징 추출기가 지금 설정과 다르면 디스크립터 차원이 달라
 # (SuperPoint 256 ↔ ALIKED 128) rtabmap 이 단어 사전 검색의 UASSERT 로 죽는다 — 띄우기 전에 막는다. 묶음을 바꿔 볼 때
-# 옛 맵을 그대로 둔 실수를 여기서 잡는다 (Kp/DetectorStrategy 를 되돌리면 그 맵은 다시 쓸 수 있다).
+# 옛 맵을 그대로 둔 실수를 여기서 잡는다 (feature_matching.yaml 의 use 를 되돌리면 그 맵은 다시 쓸 수 있다).
 # 매핑 모드는 -d 로 DB 를 새로 만들므로 보지 않는다.
 def _check_map_detector(db_path, want):
     db_path = os.path.expanduser(db_path)
@@ -229,11 +277,23 @@ def launch_setup(context, *args, **kwargs):
     thread_env = ({} if _thr in ('', '0') else
                   {k: _thr for k in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS')})
 
-    tuning = _load_tuning(LaunchConfiguration('rtabmap_params').perform(context))
-    strategy = tuning.get('rtabmap', {}).get('Kp/DetectorStrategy')
+    params_path = LaunchConfiguration('rtabmap_params').perform(context)
+    tuning = _load_tuning(params_path)
+    core = tuning.get('rtabmap', {})
+    is_localization = localization.perform(context) == 'true'
+    feature_path = os.path.join(os.path.dirname(params_path), 'feature_matching.yaml')
+    set_name, feature_set = _load_feature_set(feature_path, is_localization)
+    strategy = feature_set['Kp/DetectorStrategy']
+    leftover = {k: core[k] for k in feature_set if k in core and not _same(core[k], feature_set[k])}
+    tuned = {k: v for k, v in leftover.items() if not _same(v, _MOVED_DEFAULTS.get(k))}
+    if tuned:                                   # _MOVED_DEFAULTS 주석 — 고쳐 둔 값을 조용히 덮지 않는다
+        raise RuntimeError(
+            f'[aeirobot_rtabmap] {params_path} 에 고쳐 둔 값이 있는데 이 키는 이제 {feature_path} 의 묶음({set_name})이 정한다: '
+            + ', '.join(f'{k} {v} (묶음 값 {feature_set[k]})' for k, v in sorted(tuned.items()))
+            + ' — 쓸 값을 feature_matching.yaml 의 묶음에 적고 rtabmap_params.yaml 에서 그 줄을 지울 것 (Kp/DetectorStrategy 는 use 로 고른다)')
     feature_tunables, feature_fixed = _feature_params(strategy)
     _check_feature_files(strategy)
-    if localization.perform(context) == 'true':
+    if is_localization:
         _check_map_detector(LaunchConfiguration('database_path').perform(context), strategy)
     # detection_rate:=N 이 명시되면 yaml 의 Rtabmap/DetectionRate 를 덮는다 (빈 값 = yaml).
     detection_rate = LaunchConfiguration('detection_rate').perform(context)
@@ -303,6 +363,19 @@ def launch_setup(context, *args, **kwargs):
                   if rgbd_images else {})
     rgbdx_remap = [('rgbd_images', rgbd_images)] if rgbd_images else []
 
+    # 무엇이 적용되는지 시작 로그에 남긴다: 묶음 키의 최종값(launch 가 덮은 것 · rtabmap_args 까지), 안 쓰인 옛 줄, 인자가 덮은 yaml 값
+    cli = dict(re.findall(r'--(\S+/\S+)\s+(\S+)', LaunchConfiguration('rtabmap_args').perform(context)))
+    final = {**feature_fixed, **rgbdx_slam, **cli}
+    print(f"[aeirobot_rtabmap] 특징 묶음 {set_name} ({'위치추정' if is_localization else '매핑'} 적용 값, {feature_path}): "
+          + ' '.join(f'{k}={final.get(k, v)}' for k, v in sorted(feature_set.items())))
+    if leftover:
+        print('[aeirobot_rtabmap] 참고: rtabmap_params.yaml 에 남은 옛 기본값은 안 쓰인다 (지워도 된다) — '
+              + ', '.join(f'{k} {v}' for k, v in sorted(leftover.items())))
+    from_yaml = {**core, **feature_set}
+    overridden = [f'{k} {from_yaml[k]} → {v}' for k, v in sorted(cli.items()) if k in from_yaml and not _same(from_yaml[k], v)]
+    if overridden:
+        print('[aeirobot_rtabmap] 주의: rtabmap_args 가 yaml 의 값을 덮는다 — ' + ', '.join(overridden))
+
     # 시뮬 정답 자세 — ground_truth_topic(nav_msgs/Odometry)을 주면 그것을 TF 로 옮기는 노드를 띄우고, rtabmap 이 맵 노드마다
     # 정답 자세를 DB 에 남긴다 (Node.ground_truth_pose → 위치추정 · 맵의 절대 오차를 잴 수 있다).
     # 기본은 끔: 정답 TF 가 없는데 켜 두면 rtabmap 이 프레임마다 wait_for_transform 만큼 기다린다. Isaac 프로필만 준다.
@@ -347,9 +420,9 @@ def launch_setup(context, *args, **kwargs):
             package='rtabmap_slam', executable='rtabmap', name='rtabmap', output='screen',
             # GB급 DB의 사전 저장이 끝나기 전에 launch가 종료 신호를 올리지 않는다.
             sigterm_timeout='60', sigkill_timeout='10',
-            # 튠 값(Grid/Vis/Kp/Optimizer/LC 임계 …, 특징 묶음은 Kp/DetectorStrategy)은 config/<세대>/rtabmap_params.yaml rtabmap: 절.
-            # 여기 남은 것은 launch 인자·환경으로 계산되는 값만 — yaml 보다 뒤라 yaml 을 덮는다.
-            parameters=[{**common_params, **feature_tunables, **tuning.get('rtabmap', {}), **{
+            # 튠 값(Grid/Vis/Kp/Optimizer/LC 임계 …)은 config/<세대>/rtabmap_params.yaml rtabmap: 절, 특징 묶음과 묶음마다 다른
+            # 값은 그 옆 feature_matching.yaml. 여기 남은 것은 launch 인자·환경으로 계산되는 값만 — yaml 보다 뒤라 yaml 을 덮는다.
+            parameters=[{**common_params, **feature_tunables, **core, **feature_set, **{
                 'map_frame_id': LaunchConfiguration('map_frame_id'),
                 'publish_tf': LaunchConfiguration('publish_tf_map'),
                 'initial_pose': LaunchConfiguration('initial_pose'),
