@@ -11,8 +11,8 @@
 # 선언하므로 ROS params-file 로 직접 먹이면 0.11(double)·false(bool) 가 타입 충돌로 노드를
 # 죽인다. 여기서는 따옴표를 빼도 안전하다 (0.11 → '0.11', false → 'false').
 #
-# 우선순위 (뒤가 이김): 이 yaml < launch 인자로 계산되는 값(localization/force_3dof/memory_thr
-# 등, launch 파일 참조) < rtabmap_args:="--Rtabmap/LoopThr 0.2" 같은 CLI 직접 지정.
+# 우선순위 (뒤가 이김): 이 yaml < 같은 폴더 feature_matching.yaml 의 고른 묶음 < launch 인자로 계산되는
+# 값(localization/force_3dof/memory_thr 등, launch 파일 참조) < rtabmap_args:="--Rtabmap/LoopThr 0.2" 같은 CLI 직접 지정.
 # detection_rate:=N 을 명시하면 아래 Rtabmap/DetectionRate 를 덮는다.
 #
 # 파라미터 설명: rtabmap --params  또는 https://github.com/introlab/rtabmap/wiki/Advanced-parameter-tuning
@@ -21,6 +21,8 @@
 rtabmap:
   # loop closure 감지율 [Hz]. 특징 추출 · 매칭이 GPU 를 쓰므로 작은 GPU 에서
   # 세만틱과 경합하면 1 로 낮출 것. lifelong 스택은 TRT 전환으로 여유 확보 후 2 복원.
+  #   올리면: 맵 노드가 촘촘해지고 위치를 더 자주 찾는다. 특징 추출 · 매칭이 그만큼 자주 돌아 GPU · CPU 를 더 쓴다
+  #   내리면: 가벼워진다. 빠르게 달릴 때 노드 간격이 벌어져 루프 기회가 준다 (간격 = 속도 ÷ 이 값)
   Rtabmap/DetectionRate: '2'
   Mem/RecentWmRatio: '0.3'
 
@@ -45,38 +47,39 @@ rtabmap:
   # 노드마다 저장하는 라이다 점군 복셀 [m] — dToF 점이 많아 DB 를 키우지 않게
   Mem/LaserScanVoxelSize: '0.05'
 
-  # 특징점/등록 — Kp/DetectorStrategy 한 줄이 특징 추출 · 매칭 묶음을 고른다. 묶음의 나머지 값은 launch 가 채운다
-  # (aeirobot_rtabmap.launch.py _feature_params): Vis/FeatureType · 모델 이름 · 스크립트 경로는 묶음이 정하고, 임계 같은
-  # 조정 값(SuperPoint/Threshold · PyMatcher/Threshold …)은 여기 적으면 그 값이 이긴다.
-  #   '11' = SuperPoint + SuperGlue — 지금까지 쓰던 것. MagicLeap 비상업 · 연구용 라이선스라 고객 배포본에는 못 싣는다.
-  #   '15' = ALIKED + LightGlue    — 바꿔 갈 것 (BSD-3 · Apache-2.0). 카메라 여러 대도 LightGlue 로 매칭한다.
-  # 두 묶음은 디스크립터가 달라(256 ↔ 128차원) 맵 DB 를 서로 못 쓴다 — 바꾸면 맵을 다시 만들거나 rtabmap-reprocess 로
-  # 특징을 다시 뽑는다. 다른 묶음으로 만든 맵으로 위치추정을 띄우면 launch 가 이유를 적고 멈춘다 (값을 되돌리면 다시 쓴다).
+  # 특징점/등록 — 특징 추출 · 매칭 묶음(SuperPoint + SuperGlue ↔ ALIKED + LightGlue)과 묶음마다 다른 값은 같은 폴더
+  # feature_matching.yaml 이 정한다: Kp/DetectorStrategy · Kp/MaxFeatures · Vis/MaxFeatures · Vis/CorNNType · 추출 · 매칭 임계 ·
+  # 루프 수락 문턱(Vis/MinInliers · RGBD/OptimizeMaxError). 그 키는 여기 적지 않는다 — 다른 값으로 적어 두면 launch 가 멈춘다.
+  # 조정 순서(증상 → 값)와 로그 읽는 법도 그 파일 맨 위에 있다.
   Reg/Strategy: '0'
-  Kp/DetectorStrategy: '11'
-  Vis/MaxFeatures: '1000'
-  Kp/MaxFeatures: '1000'
   ORB/Gpu: 'false'
   Mem/ImagePostDecimation: '1'
   Mem/ImagePreDecimation: '1'
   Vis/CorGuessWinSize: '0'
-  Vis/CorNNType: '6'
   Reg/RepeatOnce: 'false'
   Mem/RehearsalSimilarity: '0.6'
-  RGBD/OptimizeMaxError: '3.0'
   Optimizer/Robust: 'false'
 
   # 오탐 LC 대책 3종 (setup 3.69): 순간이동-복귀 반복의 원인이 "느슨한 PnP 가 부풀린
   # 인라이어"로 지목됨. 336L 유효거리(~10m) 밖 특징은 depth 노이즈가 커 나쁜 3D 점이
   # 되는데 4px 관용이 통과시켰다.
+  # 이 거리 [m] 보다 먼 특징점은 버린다 (0 = 제한 없음)
+  #   올리면: 넓은 곳에서 쓸 점이 는다. 먼 점은 깊이 잡음이 커서 틀린 인라이어가 섞인다
+  #   내리면: 가까운 점만 써서 정합이 정확하다. 벽이 먼 곳에서는 점이 모자라 루프가 안 붙는다
   Kp/MaxDepth: '10.0'            # 15→10: 센서 신뢰 거리로 제한
-  Vis/MinInliers: '30'
+  # 카메라 1대(PnP 정합)에서 대응점을 인라이어로 치는 재투영 오차 한도 [px]
+  #   올리면: 인라이어가 늘어 루프가 잘 붙는다. 어긋난 점까지 세어 틀린 루프가 통과한다 (4 일 때 그랬다)
+  #   내리면: 더 엄격하다. 인라이어가 줄어 Vis/MinInliers 에 걸리는 루프가 는다
+  #   M2(카메라 2대, 3D-3D 정합)에서는 쓰이지 않는다. 그쪽 한도는 Vis/InlierDistance (rtabmap 기본 0.1 m, 여기 안 적음)
   Vis/PnPReprojError: '2'        # 4→2(기본값 복원): 한계 대응 인라이어 산입 차단
   RGBD/ProximityPathFilteringRadius: '2.0'
   RGBD/ProximityMaxGraphDepth: '100'
   RGBD/LocalRadius: '15.0'
+  # 장소 인식 점수가 이 값을 넘는 후보만 정합(특징 매칭)으로 넘긴다
+  #   올리면: 후보가 줄어 가볍다. 맞는 자리도 후보에서 빠져 루프를 놓친다
+  #   내리면: 후보가 늘어 매칭을 더 자주 돌린다. 틀린 후보는 feature_matching.yaml 의 루프 수락 문턱이 거른다
   Rtabmap/LoopThr: '0.11'
-  RGBD/MaxOdomCacheSize: '30'    # 10→30: 오탐 사후 기각(OptimizeMaxError) 검사창 확대
+  RGBD/MaxOdomCacheSize: '30'    # 10→30: 오탐 사후 기각(RGBD/OptimizeMaxError — feature_matching.yaml) 검사창 확대
 
   # Prior 워크플로 (with_gui 와 동일)
   Optimizer/PriorsIgnored: 'false'
