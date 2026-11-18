@@ -4,7 +4,7 @@
 
 | 파일 | 정하는 것 |
 |---|---|
-| `feature_matching.yaml` | 특징 추출 · 매칭 묶음 고르기(`active`), 묶음마다 다른 값: 특징점 수, 추출 · 매칭 임계, 루프 수락 문턱 |
+| `feature_matching.yaml` | 특징 추출 · 매칭 묶음 고르기(`use`), 묶음마다 다른 값: 특징점 수, 추출 · 매칭 임계, 루프 수락 문턱 |
 | `rtabmap_params.yaml` | 그 밖의 rtabmap 코어 값 (격자, 메모리, 최적화, 감지율 …) |
 
 - 고치는 곳: ASH 파라미터 탭 › SLAM (RTAB-Map). 배포본에서는 `~/.aeirobot/config/rtabmap/<세대>/` 가 같은 파일이다.
@@ -21,30 +21,32 @@
 
 ## 묶음 바꾸기
 
-1. `feature_matching.yaml` 의 `active` 를 `sets` 의 이름으로 고친다 (`superpoint_superglue` ↔ `aliked_lightglue`).
+`use` 는 설정이다. 지금 상태를 보여 주는 칸이 아니고, 이 줄을 고쳐야 추출기와 매칭기가 바뀐다. `sets` 에서는 `use` 로 고른 묶음의 값만 쓰인다. 지금 무엇이 돌고 있는지는 SLAM 시작 로그로 확인한다.
+
+1. `feature_matching.yaml` 의 `use` 를 `sets` 의 이름으로 고친다 (`superpoint_superglue` ↔ `aliked_lightglue`).
 2. 맵을 다시 만든다. 두 묶음은 디스크립터가 달라(256 ↔ 128차원) 맵을 서로 못 쓴다.
 3. SLAM 프로세스를 다시 시작하고 시작 로그의 묶음 이름을 확인한다.
 
-되돌리려면 `active` 를 되돌린다. 그 묶음으로 만든 맵은 그대로 다시 쓴다.
+되돌리려면 `use` 를 되돌린다. 그 묶음으로 만든 맵은 그대로 다시 쓴다.
 
 런치가 띄우지 않고 멈추는 경우:
 
 | 메시지 | 뜻 | 할 일 |
 |---|---|---|
 | `feature_matching.yaml 가 없다` | 파일이 이 기기의 config 폴더에 없다 | 배포본은 `aeirobot up` 으로 다시 시딩, 개발 워크스페이스는 `rtabmap_launch` 를 다시 빌드 |
-| `active: … 은 sets 에 없는 이름이다` | 이름 오타 | 메시지에 나온 이름 중 하나로 |
-| `… 에 고쳐 둔 값이 있는데 이 키는 이제 …` | 옛 `rtabmap_params.yaml` 에 이 파일로 옮겨 간 키가 고친 값으로 남아 있다 | 쓸 값을 묶음에 적고 `rtabmap_params.yaml` 의 그 줄을 지운다. `Kp/DetectorStrategy` 면 `active` 로 고른다 |
+| `use: … 은 sets 에 없는 이름이다` | 이름 오타 | 메시지에 나온 이름 중 하나로 |
+| `… 에 고쳐 둔 값이 있는데 이 키는 이제 …` | 옛 `rtabmap_params.yaml` 에 이 파일로 옮겨 간 키가 고친 값으로 남아 있다 | 쓸 값을 묶음에 적고 `rtabmap_params.yaml` 의 그 줄을 지운다. `Kp/DetectorStrategy` 면 `use` 로 고른다 |
 | `Kp/DetectorStrategy 는 11(SuperPoint) 또는 15(ALIKED)여야 한다` | 묶음에 번호가 없거나 다른 번호다 | 복사해 온 묶음의 번호를 그대로 둔다 |
 | `… 는 "Xxx/Yyy: 값" 한 줄이어야 함` · `아래는 "Xxx/Yyy: 값" 맵이어야 함` | 들여쓰기가 어긋났다 | 묶음 바로 아래는 `키: 값`, `mapping:` · `localization:` 아래도 `키: 값` |
-| `맵 … 는 Kp/DetectorStrategy N 로 만들어졌는데` | 다른 묶음으로 만든 맵 | 맵을 다시 만들거나 `active` 를 되돌린다 |
+| `맵 … 는 Kp/DetectorStrategy N 로 만들어졌는데` | 다른 묶음으로 만든 맵 | 맵을 다시 만들거나 `use` 를 되돌린다 |
 | `SuperPoint 가중치가 없다` · `가중치 aliked-n16.pth 이 없다` · `ALIKED · LightGlue 스크립트가 없다` | 고른 묶음의 모델이 이 기기에 없다 | `feature_extractors/aliked_lightglue/README.md` |
 
 ## 조정 순서
 
 같은 내용이 yaml 안에도 있다. `feature_matching.yaml` 맨 위에 증상별 순서와 로그 읽는 법이 있고, 값마다 그 줄 위에 올리면 · 내리면 어떻게 되는지가 적혀 있다.
 
-한 번에 값 하나만 바꾼다. 원래 묶음을 고치지 말고 통째로 복사해 이름을 붙인 뒤 그 사본을 `active` 로 고른다.
-`Kp/DetectorStrategy` 가 같으면 맵은 그대로 쓰므로 `active` 한 줄로 오가며 견줄 수 있다.
+한 번에 값 하나만 바꾼다. 원래 묶음을 고치지 말고 통째로 복사해 이름을 붙인 뒤 그 사본을 `use` 로 고른다.
+`Kp/DetectorStrategy` 가 같으면 맵은 그대로 쓰므로 `use` 한 줄로 오가며 견줄 수 있다.
 
 | 증상 | 먼저 볼 값 | 방향 |
 |---|---|---|
@@ -70,7 +72,7 @@
 
 ## 하지 않는 것
 
-- `Kp/DetectorStrategy` 를 고쳐서 묶음을 바꾸지 않는다. 묶음은 `active` 로 고른다 (스크립트 · 모델 경로가 그 번호에 묶여 있다).
+- `Kp/DetectorStrategy` 를 고쳐서 묶음을 바꾸지 않는다. 묶음은 `use` 로 고른다 (스크립트 · 모델 경로가 그 번호에 묶여 있다).
 - `RGBD/OptimizeMaxError: 0` 은 검사를 끈다. 쓰지 않는다.
 - 루프 수락 값을 프로필의 `rtabmap_args` 로 넘기지 않는다. yaml 값을 덮어서 ASH 에서 고쳐도 안 먹는다 (M2 가 전에 그랬다).
   남은 예외는 M1 시뮬 위치추정 프로필 `lifelong_zed` 하나다 (시뮬만 오차비 1.5, 실물은 3.0). 시작 로그의 「주의」 줄에 나온다.

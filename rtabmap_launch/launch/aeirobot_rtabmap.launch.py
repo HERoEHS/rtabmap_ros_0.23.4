@@ -154,7 +154,7 @@ def _load_tuning(path):
     return out
 
 
-# 특징 추출 · 매칭 묶음 — config/<세대>/feature_matching.yaml 의 active 한 줄이 sets 에서 고른다 (rtabmap_params.yaml 옆 파일).
+# 특징 추출 · 매칭 묶음 — config/<세대>/feature_matching.yaml 의 use 한 줄이 sets 에서 고른다 (rtabmap_params.yaml 옆 파일).
 # 묶음마다 다른 값(추출 · 매칭 임계, 특징점 수, 루프 수락 문턱)을 묶음별로 적어 두어 한 줄로 바꿔도 그 묶음으로 검증한 값이 따라온다.
 # 묶음 안의 mapping: · localization: 은 그 모드에서만 덧씌운다. 조정 지침은 config/README.md.
 # 돌려주는 것은 (묶음 이름, {'Xxx/Yyy': '문자열'}). 파일이 없으면 멈춘다 — 옛 rtabmap_params.yaml 만으로 띄우면 M2 는 전에 프로필이
@@ -166,10 +166,10 @@ def _load_feature_set(path, localization):
     with open(path, encoding='utf-8') as f:
         data = yaml.safe_load(f) or {}
     sets = data.get('sets') if isinstance(data, dict) else None
-    name = data.get('active') if isinstance(data, dict) else None
+    name = data.get('use') if isinstance(data, dict) else None
     if not isinstance(sets, dict) or not isinstance(sets.get(name), dict):
         names = ' · '.join(map(str, sets)) if isinstance(sets, dict) else '(sets 가 없다)'
-        raise RuntimeError(f'[aeirobot_rtabmap] {path}: active: {name} 은 sets 에 없는 이름이다 — 고를 수 있는 것: {names}')
+        raise RuntimeError(f'[aeirobot_rtabmap] {path}: use: {name} 은 sets 에 없는 이름이다 — 고를 수 있는 것: {names}')
     chosen = dict(sets[name])
     modes = {mode: chosen.pop(mode, None) for mode in ('mapping', 'localization')}
     for mode, values in modes.items():          # 안 쓰는 모드도 지금 본다 — 그 모드로 처음 띄울 때 멈추지 않게
@@ -241,7 +241,7 @@ def _check_feature_files(strategy):
 
 # 위치추정 모드는 맵 DB 를 그대로 읽는다. 그 맵을 만든 특징 추출기가 지금 설정과 다르면 디스크립터 차원이 달라
 # (SuperPoint 256 ↔ ALIKED 128) rtabmap 이 단어 사전 검색의 UASSERT 로 죽는다 — 띄우기 전에 막는다. 묶음을 바꿔 볼 때
-# 옛 맵을 그대로 둔 실수를 여기서 잡는다 (feature_matching.yaml 의 active 를 되돌리면 그 맵은 다시 쓸 수 있다).
+# 옛 맵을 그대로 둔 실수를 여기서 잡는다 (feature_matching.yaml 의 use 를 되돌리면 그 맵은 다시 쓸 수 있다).
 # 매핑 모드는 -d 로 DB 를 새로 만들므로 보지 않는다.
 def _check_map_detector(db_path, want):
     db_path = os.path.expanduser(db_path)
@@ -290,7 +290,7 @@ def launch_setup(context, *args, **kwargs):
         raise RuntimeError(
             f'[aeirobot_rtabmap] {params_path} 에 고쳐 둔 값이 있는데 이 키는 이제 {feature_path} 의 묶음({set_name})이 정한다: '
             + ', '.join(f'{k} {v} (묶음 값 {feature_set[k]})' for k, v in sorted(tuned.items()))
-            + ' — 쓸 값을 feature_matching.yaml 의 묶음에 적고 rtabmap_params.yaml 에서 그 줄을 지울 것 (Kp/DetectorStrategy 는 active 로 고른다)')
+            + ' — 쓸 값을 feature_matching.yaml 의 묶음에 적고 rtabmap_params.yaml 에서 그 줄을 지울 것 (Kp/DetectorStrategy 는 use 로 고른다)')
     feature_tunables, feature_fixed = _feature_params(strategy)
     _check_feature_files(strategy)
     if is_localization:
